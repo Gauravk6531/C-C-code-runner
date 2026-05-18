@@ -4,16 +4,20 @@ import re
 import shutil
 import time
 import subprocess
+import json
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QTextEdit, QPlainTextEdit,
     QLabel, QTabWidget, QSplitter, QLineEdit, QStatusBar, QFrame,
-    QStyle, QInputDialog, QMessageBox, QStackedWidget, QCheckBox
+    QStyle, QInputDialog, QMessageBox, QStackedWidget, QCheckBox,
+    QTreeView, QFileSystemModel, QDialog, QFormLayout, QComboBox,
+    QSlider, QDialogButtonBox, QMenu
 )
 from PySide6.QtCore import QProcess, Qt, QSize, QTimer, QFileSystemWatcher, QRegularExpression, QRect, QPoint
 from PySide6.QtGui import (
     QFont, QIcon, QKeySequence, QShortcut, QTextCursor, QColor,
-    QPainter, QTextFormat, QFontMetrics, QSyntaxHighlighter, QTextCharFormat, QTextDocument
+    QPainter, QTextFormat, QFontMetrics, QSyntaxHighlighter, QTextCharFormat, QTextDocument,
+    QPixmap
 )
 
 # ==============================================================================
@@ -215,6 +219,204 @@ class Minimap(QPlainTextEdit):
 
 
 # ==============================================================================
+# 4a. C/C++ Custom Vector Badge File System Model
+# ==============================================================================
+class CppFileExplorerModel(QFileSystemModel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.is_dark = True
+        self.icon_cache = {}
+        
+    def set_theme(self, is_dark):
+        self.is_dark = is_dark
+        self.icon_cache.clear()
+        
+    def data(self, index, role=Qt.ItemDataRole.DecorationRole):
+        if role == Qt.ItemDataRole.DecorationRole:
+            if self.isDir(index):
+                return self.get_folder_icon()
+            
+            filepath = self.filePath(index)
+            ext = os.path.splitext(filepath)[1].lower()
+            if ext == '.c':
+                return self.get_c_icon()
+            elif ext in ['.cpp', '.cc', '.cxx']:
+                return self.get_cpp_icon()
+            elif ext in ['.h', '.hpp']:
+                return self.get_h_icon()
+            elif ext in ['.txt', '.md']:
+                return self.get_txt_icon()
+            else:
+                return self.get_generic_icon()
+                
+        return super().data(index, role)
+        
+    def get_c_icon(self):
+        if 'c' not in self.icon_cache:
+            self.icon_cache['c'] = self.create_badge_icon("#e76f51", "C")
+        return self.icon_cache['c']
+        
+    def get_cpp_icon(self):
+        if 'cpp' not in self.icon_cache:
+            self.icon_cache['cpp'] = self.create_badge_icon("#264653", "C+")
+        return self.icon_cache['cpp']
+        
+    def get_h_icon(self):
+        if 'h' not in self.icon_cache:
+            self.icon_cache['h'] = self.create_badge_icon("#2a9d8f", "H")
+        return self.icon_cache['h']
+        
+    def get_txt_icon(self):
+        if 'txt' not in self.icon_cache:
+            self.icon_cache['txt'] = self.create_badge_icon("#4a4e69", "T")
+        return self.icon_cache['txt']
+        
+    def get_generic_icon(self):
+        if 'generic' not in self.icon_cache:
+            self.icon_cache['generic'] = self.create_badge_icon("#6c757d", "•")
+        return self.icon_cache['generic']
+        
+    def get_folder_icon(self):
+        if 'folder' not in self.icon_cache:
+            self.icon_cache['folder'] = self.create_badge_icon("#f4a261", "F")
+        return self.icon_cache['folder']
+        
+    def create_badge_icon(self, color_hex, text):
+        pixmap = QPixmap(16, 16)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Draw rounded rectangle background
+        painter.setBrush(QColor(color_hex))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(0, 0, 16, 16, 3, 3)
+        
+        # Draw text inside
+        painter.setPen(QColor("#ffffff"))
+        font = QFont("Segoe UI", 9, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.drawText(QRect(0, 0, 16, 16), Qt.AlignmentFlag.AlignCenter, text)
+        
+        painter.end()
+        return QIcon(pixmap)
+
+
+# ==============================================================================
+# 4b. Custom IDE Settings Configuration Dialog Widget
+# ==============================================================================
+class SettingsDialog(QDialog):
+    def __init__(self, main_app, parent=None):
+        super().__init__(parent)
+        self.main_app = main_app
+        self.setWindowTitle("coderun Settings")
+        self.setMinimumWidth(380)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QFormLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+        
+        # Consistent professional style
+        is_dark = self.main_app.theme_is_dark
+        bg_color = "#252526" if is_dark else "#f3f3f3"
+        text_color = "#d4d4d4" if is_dark else "#333333"
+        input_bg = "#3c3c3c" if is_dark else "#ffffff"
+        input_border = "#3c3c3c" if is_dark else "#cccccc"
+        btn_bg = "#3c3c3c" if is_dark else "#e1e1e1"
+        btn_hover = "#4c4c4c" if is_dark else "#d1d1d1"
+        
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {bg_color}; color: {text_color}; }}
+            QLabel {{ color: {text_color}; font-size: 12px; }}
+            QComboBox {{ background-color: {input_bg}; border: 1px solid {input_border}; padding: 4px; color: {text_color}; border-radius: 3px; }}
+            QSlider::groove:horizontal {{ border: 1px solid {input_border}; height: 6px; background: {input_bg}; border-radius: 3px; }}
+            QSlider::handle:horizontal {{ background: #007acc; width: 14px; margin: -4px 0; border-radius: 7px; }}
+            QCheckBox {{ color: {text_color}; }}
+            QPushButton {{ background-color: {btn_bg}; border: 1px solid {input_border}; color: {text_color}; padding: 5px 12px; border-radius: 4px; }}
+            QPushButton:hover {{ background-color: {btn_hover}; }}
+        """)
+        
+        # 1. Font Family
+        self.font_combo = QComboBox()
+        self.font_combo.addItems(["JetBrains Mono", "Cascadia Code", "Fira Code", "Consolas", "Segoe UI"])
+        self.font_combo.setCurrentText(self.main_app.settings.get("font_family", "JetBrains Mono"))
+        layout.addRow("Font Family:", self.font_combo)
+        
+        # 2. Font Size
+        self.size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.size_slider.setRange(8, 30)
+        self.size_slider.setValue(self.main_app.settings.get("font_size", 14))
+        self.size_label = QLabel(str(self.size_slider.value()) + "px")
+        self.size_slider.valueChanged.connect(lambda val: self.size_label.setText(str(val) + "px"))
+        
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(self.size_slider)
+        size_layout.addWidget(self.size_label)
+        layout.addRow("Font Size:", size_layout)
+        
+        # 3. Line Height
+        self.line_height_combo = QComboBox()
+        self.line_height_combo.addItems(["1.0", "1.2", "1.4", "1.5", "1.8", "2.0"])
+        self.line_height_combo.setCurrentText(str(self.main_app.settings.get("line_height", 1.4)))
+        layout.addRow("Line Height:", self.line_height_combo)
+        
+        # 4. Tab Size
+        self.tab_size_combo = QComboBox()
+        self.tab_size_combo.addItems(["2", "4", "8"])
+        self.tab_size_combo.setCurrentText(str(self.main_app.settings.get("tab_size", 4)))
+        layout.addRow("Tab Size (spaces):", self.tab_size_combo)
+        
+        # 5. Word Wrap
+        self.wrap_box = QCheckBox()
+        self.wrap_box.setChecked(self.main_app.settings.get("word_wrap", False))
+        layout.addRow("Word Wrap:", self.wrap_box)
+        
+        # 6. Ligatures
+        self.ligature_box = QCheckBox()
+        self.ligature_box.setChecked(self.main_app.settings.get("ligatures", True))
+        layout.addRow("Enable Ligatures:", self.ligature_box)
+        
+        # 7. Auto Save
+        self.autosave_box = QCheckBox()
+        self.autosave_box.setChecked(self.main_app.settings.get("auto_save", False))
+        layout.addRow("Auto Save:", self.autosave_box)
+        
+        # 8. Terminal Font Size
+        self.terminal_size_slider = QSlider(Qt.Orientation.Horizontal)
+        self.terminal_size_slider.setRange(8, 24)
+        self.terminal_size_slider.setValue(self.main_app.settings.get("terminal_font_size", 12))
+        self.terminal_size_label = QLabel(str(self.terminal_size_slider.value()) + "px")
+        self.terminal_size_slider.valueChanged.connect(lambda val: self.terminal_size_label.setText(str(val) + "px"))
+        
+        term_layout = QHBoxLayout()
+        term_layout.addWidget(self.terminal_size_slider)
+        term_layout.addWidget(self.terminal_size_label)
+        layout.addRow("Terminal Font Size:", term_layout)
+        
+        # OK / Cancel Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.save_settings)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+        
+    def save_settings(self):
+        self.main_app.settings["font_family"] = self.font_combo.currentText()
+        self.main_app.settings["font_size"] = self.size_slider.value()
+        self.main_app.settings["line_height"] = float(self.line_height_combo.currentText())
+        self.main_app.settings["tab_size"] = int(self.tab_size_combo.currentText())
+        self.main_app.settings["word_wrap"] = self.wrap_box.isChecked()
+        self.main_app.settings["ligatures"] = self.ligature_box.isChecked()
+        self.main_app.settings["auto_save"] = self.autosave_box.isChecked()
+        self.main_app.settings["terminal_font_size"] = self.terminal_size_slider.value()
+        
+        self.main_app.save_settings_to_file()
+        self.main_app.apply_loaded_settings()
+        self.accept()
+
+
+# ==============================================================================
 # 5. Custom VS Code-like Code Editor
 # ==============================================================================
 class CodeEditor(QPlainTextEdit):
@@ -237,6 +439,10 @@ class CodeEditor(QPlainTextEdit):
         self.autocomplete_popup = AutocompletePopup(self)
         self.autocomplete_popup.itemDoubleClicked.connect(self.insert_completion)
 
+        # Smart Quote / Auto pair state machine tracking
+        self.last_auto_inserted_closing_pos = -1
+        self.last_auto_inserted_char = ''
+
     def setup_editor(self):
         # Configure plain text editor settings
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
@@ -246,6 +452,42 @@ class CodeEditor(QPlainTextEdit):
         
         # Custom tab stop distance (4 spaces)
         self.setTabStopDistance(QFontMetrics(font).horizontalAdvance(' ') * 4)
+
+    def zoom_in(self):
+        font = self.font()
+        size = font.pointSize()
+        if size < 40:
+            font.setPointSize(size + 1)
+            self.setFont(font)
+            self.setTabStopDistance(QFontMetrics(font).horizontalAdvance(' ') * self.main_app.settings.get("tab_size", 4))
+            self.update_line_number_area_width(0)
+            
+    def zoom_out(self):
+        font = self.font()
+        size = font.pointSize()
+        if size > 6:
+            font.setPointSize(size - 1)
+            self.setFont(font)
+            self.setTabStopDistance(QFontMetrics(font).horizontalAdvance(' ') * self.main_app.settings.get("tab_size", 4))
+            self.update_line_number_area_width(0)
+
+    def reset_zoom(self):
+        font = self.font()
+        font.setPointSize(self.main_app.settings.get("font_size", 14))
+        self.setFont(font)
+        self.setTabStopDistance(QFontMetrics(font).horizontalAdvance(' ') * self.main_app.settings.get("tab_size", 4))
+        self.update_line_number_area_width(0)
+
+    def wheelEvent(self, event):
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_in()
+            else:
+                self.zoom_out()
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
     def line_number_area_width(self):
         digits = 1
@@ -340,8 +582,8 @@ class CodeEditor(QPlainTextEdit):
         char_right = doc.characterAt(pos)
         
         pairs = {
-            '(': ')', '[': ']', '{': '}',
-            ')': '(', ']': '[', '}': '{'
+            '(': ')', '[': ']', '{': '}', '<': '>',
+            ')': '(', ']': '[', '}': '{', '>': '<'
         }
         
         target_pos = -1
@@ -357,7 +599,7 @@ class CodeEditor(QPlainTextEdit):
             
         if current_char:
             match_char = pairs[current_char]
-            direction = 1 if current_char in ['(', '[', '{'] else -1
+            direction = 1 if current_char in ['(', '[', '{', '<'] else -1
             
             # Find matching bracket position
             depth = 1
@@ -444,24 +686,26 @@ class CodeEditor(QPlainTextEdit):
 
         # 2. Smart Pair Deletion on BACKSPACE
         if key == Qt.Key.Key_Backspace:
-            if line_prefix and line_suffix:
-                char_left = line_prefix[-1]
-                char_right = line_suffix[0]
+            current_pos = cursor.position()
+            if current_pos == self.last_auto_inserted_closing_pos:
+                char_left = line_prefix[-1] if line_prefix else ""
+                char_right = line_suffix[0] if line_suffix else ""
                 pairs = {
-                    '(': ')',
-                    '[': ']',
-                    '{': '}',
-                    '<': '>',
-                    '"': '"',
-                    "'": "'"
+                    '(': ')', '[': ']', '{': '}', '<': '>', '"': '"', "'": "'"
                 }
-                if char_left in pairs and char_right == pairs[char_left]:
+                if char_left == self.last_auto_inserted_char and char_right == pairs.get(char_left):
                     cursor.beginEditBlock()
                     cursor.deleteChar()          # Deletes right pair character
                     cursor.deletePreviousChar()  # Deletes left pair character
                     cursor.endEditBlock()
+                    self.last_auto_inserted_closing_pos = -1
+                    self.last_auto_inserted_char = ''
                     event.accept()
                     return
+            
+            # Reset state on standard backspace
+            self.last_auto_inserted_closing_pos = -1
+            self.last_auto_inserted_char = ''
 
             # Indentation-Aware backspacing: delete 4 spaces if line prefix consists entirely of spaces
             if line_prefix and all(c == ' ' for c in line_prefix) and len(line_prefix) >= 4 and len(line_prefix) % 4 == 0:
@@ -472,7 +716,22 @@ class CodeEditor(QPlainTextEdit):
                 event.accept()
                 return
 
-        # 3. Smart Pair Skipping and Auto Pair Creation
+        # Reset state on other text modifications
+        if text:
+            self.last_auto_inserted_closing_pos = -1
+            self.last_auto_inserted_char = ''
+
+        # 3. Smart Pair Skipping
+        if text in [')', ']', '}', '>', '"', "'"]:
+            if line_suffix and line_suffix.startswith(text):
+                cursor.movePosition(QTextCursor.MoveOperation.NextCharacter)
+                self.setTextCursor(cursor)
+                self.last_auto_inserted_closing_pos = -1
+                self.last_auto_inserted_char = ''
+                event.accept()
+                return
+
+        # 4. Auto Pair Creation
         opening_pairs = {
             '(': ')',
             '[': ']',
@@ -481,24 +740,36 @@ class CodeEditor(QPlainTextEdit):
             '"': '"',
             "'": "'"
         }
-        
-        # Check closing pair skip (e.g. typing closing brace over existing closing brace)
-        if text in [')', ']', '}', '>', '"', "'"]:
-            if line_suffix and line_suffix.startswith(text):
-                cursor.movePosition(QTextCursor.MoveOperation.NextCharacter)
-                self.setTextCursor(cursor)
-                event.accept()
-                return
-
-        # Auto Pair Creation
         if text in opening_pairs:
-            cursor.insertText(text + opening_pairs[text])
-            cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter)
-            self.setTextCursor(cursor)
+            # Check for Case 2: quote is likely intended as closing an unclosed string on the current line
+            is_unbalanced_quote = False
+            if text == '"':
+                left_quotes = line_prefix.count('"')
+                if left_quotes % 2 == 1:
+                    is_unbalanced_quote = True
+            elif text == "'":
+                left_single_quotes = line_prefix.count("'")
+                if left_single_quotes % 2 == 1:
+                    is_unbalanced_quote = True
+            
+            if is_unbalanced_quote:
+                # Just insert the single quote character
+                cursor.insertText(text)
+                self.last_auto_inserted_closing_pos = -1
+                self.last_auto_inserted_char = ''
+            else:
+                # Standard auto-pair insertion
+                cursor.beginEditBlock()
+                cursor.insertText(text + opening_pairs[text])
+                cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter)
+                self.setTextCursor(cursor)
+                cursor.endEditBlock()
+                self.last_auto_inserted_closing_pos = cursor.position()
+                self.last_auto_inserted_char = text
             event.accept()
             return
 
-        # 4. Map Tab key inside selections to indent/outdent
+        # 5. Map Tab key inside selections to indent/outdent
         if key == Qt.Key.Key_Tab:
             if cursor.hasSelection():
                 self.indent_lines(outdent=False)
@@ -507,13 +778,13 @@ class CodeEditor(QPlainTextEdit):
             event.accept()
             return
 
-        # 5. Map Shift+Tab to outdent
+        # 6. Map Shift+Tab to outdent
         if key == Qt.Key.Key_Backtab:
             self.indent_lines(outdent=True)
             event.accept()
             return
 
-        # 6. Smart ENTER Curly Brace auto-indent
+        # 7. Smart ENTER Curly Brace auto-indent
         if key in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
             char_left = line_prefix[-1] if line_prefix else ""
             char_right = line_suffix[0] if line_suffix else ""
@@ -1074,6 +1345,19 @@ class CoderunApp(QMainWindow):
         self.target_dir = os.path.abspath(target_dir) if target_dir else os.getcwd()
         self.theme_is_dark = True
         
+        # Initialize default settings dictionary
+        self.settings = {
+            "font_family": "JetBrains Mono",
+            "font_size": 14,
+            "line_height": 1.4,
+            "tab_size": 4,
+            "word_wrap": False,
+            "ligatures": True,
+            "auto_save": False,
+            "terminal_font_size": 12
+        }
+        self.load_settings_from_file()
+        
         # Asynchronous Process Execution State
         self.process = None
         self.compile_start_time = 0
@@ -1083,12 +1367,17 @@ class CoderunApp(QMainWindow):
         self.is_compiling = False
         self.is_running_program = False
         
-        # Verify Compiler Availability
-        self.gcc_version = self.get_compiler_version("gcc")
-        self.gpp_version = self.get_compiler_version("g++")
+        # Verify Compiler Availability and Paths
+        self.gcc_path = self.find_compiler_path("gcc")
+        self.gpp_path = self.find_compiler_path("g++")
+        
+        self.gcc_version = self.get_compiler_version(self.gcc_path) if self.gcc_path else None
+        self.gpp_version = self.get_compiler_version(self.gpp_path) if self.gpp_path else None
         
         # UI Setup
         self.init_ui()
+        self.update_compiler_status()
+        self.apply_loaded_settings()
         self.refresh_files()
         
         # File system watcher for auto-refresh list updates
@@ -1097,11 +1386,23 @@ class CoderunApp(QMainWindow):
             self.watcher.addPath(self.target_dir)
             self.watcher.directoryChanged.connect(self.refresh_files)
 
-    def get_compiler_version(self, compiler):
-        if not shutil.which(compiler):
-            return None
+    def find_compiler_path(self, compiler):
+        path = shutil.which(compiler)
+        if not path and os.name == 'nt':
+            common_paths = [
+                f"C:\\msys64\\ucrt64\\bin\\{compiler}.exe",
+                f"C:\\msys64\\mingw64\\bin\\{compiler}.exe",
+                f"C:\\msys64\\clang64\\bin\\{compiler}.exe",
+                f"C:\\MinGW\\bin\\{compiler}.exe"
+            ]
+            for p in common_paths:
+                if os.path.exists(p):
+                    return p
+        return path
+
+    def get_compiler_version(self, compiler_path):
         try:
-            result = subprocess.run([compiler, "--version"], capture_output=True, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            result = subprocess.run([compiler_path, "--version"], capture_output=True, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
             return result.stdout.split('\n')[0]
         except Exception:
             return "Found (Unknown)"
@@ -1143,6 +1444,10 @@ class CoderunApp(QMainWindow):
         self.theme_btn.clicked.connect(self.toggle_theme)
         header_layout.addWidget(self.theme_btn)
         
+        self.settings_btn = QPushButton("Settings ⚙️")
+        self.settings_btn.clicked.connect(self.open_settings_dialog)
+        header_layout.addWidget(self.settings_btn)
+        
         self.open_folder_btn = QPushButton("Open Folder")
         self.open_folder_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
         self.open_folder_btn.clicked.connect(self.select_folder)
@@ -1181,17 +1486,27 @@ class CoderunApp(QMainWindow):
         self.search_input.textChanged.connect(self.filter_files)
         left_layout.addWidget(self.search_input)
         
-        self.tab_widget = QTabWidget()
+        # Beautiful QTreeView File Explorer
+        self.file_explorer = QTreeView()
+        self.file_model = CppFileExplorerModel(self)
+        self.file_model.setRootPath(self.target_dir)
+        self.file_model.setNameFilters(["*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.txt", "*.md"])
+        self.file_model.setNameFilterDisables(False) # Hide files that don't match filters
         
-        self.c_list = QListWidget()
-        self.c_list.itemClicked.connect(self.on_sidebar_file_clicked)
-        self.tab_widget.addTab(self.c_list, "C Files (.c)")
+        self.file_explorer.setModel(self.file_model)
+        self.file_explorer.setRootIndex(self.file_model.index(self.target_dir))
         
-        self.cpp_list = QListWidget()
-        self.cpp_list.itemClicked.connect(self.on_sidebar_file_clicked)
-        self.tab_widget.addTab(self.cpp_list, "C++ Files (.cpp)")
+        # Hide standard file size/type/date columns to mimic clean VS Code tree explorer
+        self.file_explorer.setHeaderHidden(True)
+        for i in range(1, self.file_model.columnCount()):
+            self.file_explorer.hideColumn(i)
+            
+        self.file_explorer.setObjectName("fileExplorer")
+        self.file_explorer.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.file_explorer.customContextMenuRequested.connect(self.show_explorer_context_menu)
+        self.file_explorer.doubleClicked.connect(self.on_explorer_double_clicked)
         
-        left_layout.addWidget(self.tab_widget)
+        left_layout.addWidget(self.file_explorer)
         
         # Sidebar Actions Toolbar
         sidebar_actions = QHBoxLayout()
@@ -1285,6 +1600,9 @@ class CoderunApp(QMainWindow):
         self.editor_tabs.setMovable(True)
         self.editor_tabs.tabCloseRequested.connect(self.close_tab)
         self.editor_tabs.currentChanged.connect(self.on_active_tab_changed)
+        self.editor_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.editor_tabs.customContextMenuRequested.connect(self.show_tab_context_menu)
+        self.editor_tabs.tabBar().installEventFilter(self)
         self.workspace_stack.addWidget(self.editor_tabs)
         
         workspace_splitter.addWidget(self.workspace_stack)
@@ -1408,14 +1726,298 @@ class CoderunApp(QMainWindow):
         self.sc_move_down = QShortcut(QKeySequence("Alt+Down"), self)
         self.sc_move_down.activated.connect(lambda: self.delegate_editor_shortcut("move_lines", 1))
 
+        # Editor zoom shortcuts
+        self.sc_zoom_in1 = QShortcut(QKeySequence("Ctrl+Plus"), self)
+        self.sc_zoom_in1.activated.connect(self.zoom_in_active_editor)
+        self.sc_zoom_in2 = QShortcut(QKeySequence("Ctrl+="), self)
+        self.sc_zoom_in2.activated.connect(self.zoom_in_active_editor)
+        
+        self.sc_zoom_out = QShortcut(QKeySequence("Ctrl+-"), self)
+        self.sc_zoom_out.activated.connect(self.zoom_out_active_editor)
+        
+        self.sc_zoom_reset = QShortcut(QKeySequence("Ctrl+0"), self)
+        self.sc_zoom_reset.activated.connect(self.reset_zoom_active_editor)
+
     def delegate_editor_shortcut(self, method_name, *args):
         editor = self.get_active_editor()
         if editor:
             method = getattr(editor, method_name)
             method(*args)
 
+    def open_settings_dialog(self):
+        dialog = SettingsDialog(self, self)
+        dialog.exec()
+        
+    def load_settings_from_file(self):
+        settings_path = os.path.join(self.target_dir, ".gemini_settings.json")
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                    self.settings.update(loaded)
+            except Exception:
+                pass
+                
+    def save_settings_to_file(self):
+        settings_path = os.path.join(self.target_dir, ".gemini_settings.json")
+        try:
+            with open(settings_path, "w", encoding="utf-8") as f:
+                json.dump(self.settings, f, indent=4)
+        except Exception:
+            pass
+            
+    def apply_loaded_settings(self):
+        font_family = self.settings.get("font_family", "JetBrains Mono")
+        font_size = self.settings.get("font_size", 14)
+        tab_size = self.settings.get("tab_size", 4)
+        word_wrap = self.settings.get("word_wrap", False)
+        term_size = self.settings.get("terminal_font_size", 12)
+        
+        font = QFont(font_family, font_size)
+        font.setFixedPitch(True)
+        font.setStyleStrategy(QFont.StyleStrategy.PreferAntialias)
+        
+        for idx in range(self.editor_tabs.count()):
+            tab = self.editor_tabs.widget(idx)
+            editor = tab.findChild(CodeEditor)
+            if editor:
+                editor.setFont(font)
+                editor.setTabStopDistance(QFontMetrics(font).horizontalAdvance(' ') * tab_size)
+                editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth if word_wrap else QPlainTextEdit.LineWrapMode.NoWrap)
+                editor.update_line_number_area_width(0)
+                
+        term_font = QFont("Consolas", term_size)
+        self.console.setFont(term_font)
+        
+    def show_explorer_context_menu(self, point):
+        index = self.file_explorer.indexAt(point)
+        if not index.isValid():
+            return
+            
+        filepath = self.file_model.filePath(index)
+        is_dir = self.file_model.isDir(index)
+        
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #252526; border: 1px solid #3c3c3c; color: #cccccc; }
+            QMenu::item { padding: 6px 20px; }
+            QMenu::item:selected { background-color: #094771; color: #ffffff; }
+        """)
+        
+        if not is_dir:
+            act_open = menu.addAction("Open")
+            act_open_tab = menu.addAction("Open in New Tab")
+            menu.addSeparator()
+            act_rename = menu.addAction("Rename")
+            act_delete = menu.addAction("Delete")
+            act_duplicate = menu.addAction("Duplicate")
+            menu.addSeparator()
+            act_copy_path = menu.addAction("Copy Path")
+            act_reveal = menu.addAction("Reveal in Explorer")
+            menu.addSeparator()
+            act_compile = menu.addAction("Compile File")
+            act_run = menu.addAction("Run File")
+            
+            action = menu.exec(self.file_explorer.viewport().mapToGlobal(point))
+            
+            if action == act_open or action == act_open_tab:
+                self.open_file_by_path(filepath)
+            elif action == act_rename:
+                self.rename_explorer_item(filepath)
+            elif action == act_delete:
+                self.delete_explorer_item(filepath)
+            elif action == act_duplicate:
+                self.duplicate_explorer_item(filepath)
+            elif action == act_copy_path:
+                QApplication.clipboard().setText(filepath)
+                self.write_system_log("Copied path to clipboard.", success=True)
+            elif action == act_reveal:
+                self.reveal_in_explorer(filepath)
+            elif action == act_compile or action == act_run:
+                self.open_file_by_path(filepath)
+                self.run_selected_file()
+        else:
+            act_new_file = menu.addAction("New File")
+            act_new_folder = menu.addAction("New Folder")
+            menu.addSeparator()
+            act_rename = menu.addAction("Rename")
+            act_delete = menu.addAction("Delete")
+            act_refresh = menu.addAction("Refresh")
+            
+            action = menu.exec(self.file_explorer.viewport().mapToGlobal(point))
+            
+            if action == act_new_file:
+                self.new_file_in_dir(filepath)
+            elif action == act_new_folder:
+                self.new_folder_in_dir(filepath)
+            elif action == act_rename:
+                self.rename_explorer_item(filepath)
+            elif action == act_delete:
+                self.delete_explorer_item(filepath)
+            elif action == act_refresh:
+                self.refresh_files()
+                
+    def on_explorer_double_clicked(self, index):
+        if not index.isValid():
+            return
+        filepath = self.file_model.filePath(index)
+        if not self.file_model.isDir(index):
+            self.open_file_by_path(filepath)
+            
+    def new_file_in_dir(self, dirpath):
+        name, ok = QInputDialog.getText(self, "New File", "Enter file name:")
+        if ok and name.strip():
+            full_path = os.path.join(dirpath, name.strip())
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            try:
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write("")
+                self.open_file_by_path(full_path)
+                self.write_system_log(f"Created file: {name}", success=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not create file: {str(e)}")
+                
+    def new_folder_in_dir(self, dirpath):
+        name, ok = QInputDialog.getText(self, "New Folder", "Enter folder name:")
+        if ok and name.strip():
+            full_path = os.path.join(dirpath, name.strip())
+            try:
+                os.makedirs(full_path, exist_ok=True)
+                self.write_system_log(f"Created folder: {name}", success=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not create folder: {str(e)}")
+                
+    def rename_explorer_item(self, path):
+        old_name = os.path.basename(path)
+        name, ok = QInputDialog.getText(self, "Rename", "Enter new name:", text=old_name)
+        if ok and name.strip() and name.strip() != old_name:
+            new_path = os.path.join(os.path.dirname(path), name.strip())
+            try:
+                os.rename(path, new_path)
+                # Update open tabs referencing the renamed path!
+                for idx in range(self.editor_tabs.count()):
+                    tab = self.editor_tabs.widget(idx)
+                    editor = tab.findChild(CodeEditor)
+                    if editor and editor.filepath == path:
+                        editor.filepath = new_path
+                        self.editor_tabs.setTabText(idx, name.strip())
+                        if self.editor_tabs.currentIndex() == idx:
+                            self.active_file_lbl.setText(name.strip())
+                        break
+                self.write_system_log(f"Renamed '{old_name}' to '{name}'", success=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not rename: {str(e)}")
+                
+    def delete_explorer_item(self, path):
+        name = os.path.basename(path)
+        ret = QMessageBox.question(self, "Confirm Delete", f"Are you sure you want to permanently delete '{name}'?",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret == QMessageBox.StandardButton.Yes:
+            try:
+                # Close associated tab if open
+                for idx in reversed(range(self.editor_tabs.count())):
+                    tab = self.editor_tabs.widget(idx)
+                    editor = tab.findChild(CodeEditor)
+                    if editor and editor.filepath == path:
+                        self.editor_tabs.removeTab(idx)
+                        break
+                        
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+                self.write_system_log(f"Deleted '{name}' successfully.", success=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not delete: {str(e)}")
+                
+    def duplicate_explorer_item(self, path):
+        if os.path.isdir(path):
+            return
+        dir_name = os.path.dirname(path)
+        base, ext = os.path.splitext(os.path.basename(path))
+        new_path = os.path.join(dir_name, f"{base}_copy{ext}")
+        try:
+            shutil.copy2(path, new_path)
+            self.write_system_log(f"Duplicated to '{os.path.basename(new_path)}'", success=True)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not duplicate file: {str(e)}")
+            
+    def reveal_in_explorer(self, path):
+        norm = os.path.normpath(path)
+        subprocess.run(["explorer", "/select,", norm], creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+        
+    def show_tab_context_menu(self, point):
+        idx = self.editor_tabs.tabBar().tabAt(point)
+        if idx == -1:
+            return
+            
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #252526; border: 1px solid #3c3c3c; color: #cccccc; }
+            QMenu::item { padding: 6px 20px; }
+            QMenu::item:selected { background-color: #094771; color: #ffffff; }
+        """)
+        
+        act_close = menu.addAction("Close")
+        act_close_others = menu.addAction("Close Others")
+        act_close_all = menu.addAction("Close All")
+        menu.addSeparator()
+        act_reveal = menu.addAction("Reveal in Explorer")
+        act_copy_path = menu.addAction("Copy File Path")
+        
+        action = menu.exec(self.editor_tabs.mapToGlobal(point))
+        
+        tab_container = self.editor_tabs.widget(idx)
+        editor = tab_container.findChild(CodeEditor)
+        if not editor:
+            return
+            
+        filepath = editor.filepath
+        
+        if action == act_close:
+            self.close_tab(idx)
+        elif action == act_close_others:
+            for i in reversed(range(self.editor_tabs.count())):
+                if i != idx:
+                    self.close_tab(i)
+        elif action == act_close_all:
+            for i in reversed(range(self.editor_tabs.count())):
+                self.close_tab(i)
+        elif action == act_reveal:
+            self.reveal_in_explorer(filepath)
+        elif action == act_copy_path:
+            QApplication.clipboard().setText(filepath)
+            self.write_system_log("Copied path to clipboard.", success=True)
+            
+    def eventFilter(self, obj, event):
+        if obj == self.editor_tabs.tabBar() and event.type() == event.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.MiddleButton:
+                idx = self.editor_tabs.tabBar().tabAt(event.pos())
+                if idx != -1:
+                    self.close_tab(idx)
+                    return True
+        return super().eventFilter(obj, event)
+
+    def zoom_in_active_editor(self):
+        editor = self.get_active_editor()
+        if editor:
+            editor.zoom_in()
+            
+    def zoom_out_active_editor(self):
+        editor = self.get_active_editor()
+        if editor:
+            editor.zoom_out()
+            
+    def reset_zoom_active_editor(self):
+        editor = self.get_active_editor()
+        if editor:
+            editor.reset_zoom()
+
     def apply_theme(self):
         """Sets main application stylesheets corresponding to theme_is_dark."""
+        if hasattr(self, 'file_model'):
+            self.file_model.set_theme(self.theme_is_dark)
+            
         if self.theme_is_dark:
             # Slate Dark Colors Scheme (VS Code Theme Matching)
             self.setStyleSheet("""
@@ -1430,10 +2032,10 @@ class CoderunApp(QMainWindow):
                 QTabWidget::pane { border: 1px solid #2d2d2d; background-color: #252526; }
                 QTabBar::tab { background-color: #1e1e1e; color: #969696; padding: 6px 14px; border: 1px solid #2d2d2d; border-bottom: none; }
                 QTabBar::tab:selected { background-color: #1e1e1e; color: #ffffff; border-bottom: 2px solid #007acc; font-weight: bold; }
-                QListWidget { background-color: #252526; border: none; padding: 4px; }
-                QListWidget::item { padding: 6px 10px; border-radius: 4px; color: #cccccc; }
-                QListWidget::item:hover { background-color: #2a2d2e; color: #ffffff; }
-                QListWidget::item:selected { background-color: #37373d; color: #4ec9b0; font-weight: bold; }
+                QTreeView#fileExplorer { background-color: #252526; border: 1px solid #2d2d2d; border-radius: 4px; padding: 4px; color: #cccccc; }
+                QTreeView#fileExplorer::item { padding: 4px 6px; border-radius: 3px; }
+                QTreeView#fileExplorer::item:hover { background-color: #2a2d2e; color: #ffffff; }
+                QTreeView#fileExplorer::item:selected { background-color: #37373d; color: #4ec9b0; font-weight: bold; }
                 QLineEdit { background-color: #3c3c3c; border: 1px solid #3c3c3c; border-radius: 4px; padding: 6px 10px; color: #ffffff; }
                 QLineEdit:focus { border: 1px solid #007acc; background-color: #2d2d2d; }
                 QPushButton { background-color: #3c3c3c; border: 1px solid #3c3c3c; border-radius: 4px; padding: 5px 12px; font-weight: bold; color: #e1e1e1; }
@@ -1462,10 +2064,10 @@ class CoderunApp(QMainWindow):
                 QTabWidget::pane { border: 1px solid #e4e4e4; background-color: #ffffff; }
                 QTabBar::tab { background-color: #f3f3f3; color: #6a6a6a; padding: 6px 14px; border: 1px solid #e4e4e4; border-bottom: none; }
                 QTabBar::tab:selected { background-color: #ffffff; color: #000000; border-bottom: 2px solid #007acc; font-weight: bold; }
-                QListWidget { background-color: #ffffff; border: none; padding: 4px; }
-                QListWidget::item { padding: 6px 10px; border-radius: 4px; color: #333333; }
-                QListWidget::item:hover { background-color: #e4e6f1; color: #000000; }
-                QListWidget::item:selected { background-color: #cfd8dc; color: #037a72; font-weight: bold; }
+                QTreeView#fileExplorer { background-color: #ffffff; border: 1px solid #e4e4e4; border-radius: 4px; padding: 4px; color: #333333; }
+                QTreeView#fileExplorer::item { padding: 4px 6px; border-radius: 3px; }
+                QTreeView#fileExplorer::item:hover { background-color: #e4e6f1; color: #000000; }
+                QTreeView#fileExplorer::item:selected { background-color: #cfd8dc; color: #037a72; font-weight: bold; }
                 QLineEdit { background-color: #f3f3f3; border: 1px solid #e4e4e4; border-radius: 4px; padding: 6px 10px; color: #000000; }
                 QLineEdit:focus { border: 1px solid #007acc; background-color: #ffffff; }
                 QPushButton { background-color: #e1e1e1; border: 1px solid #cccccc; border-radius: 4px; padding: 5px 12px; font-weight: bold; color: #333333; }
@@ -1509,44 +2111,9 @@ class CoderunApp(QMainWindow):
         self.status_bar.showMessage(f"🔍  Compiler Status:  {gcc_status}   |   {gpp_status}")
 
     def refresh_files(self):
-        """Scans working directory and updates sidebar explorer tabs."""
-        self.c_list.clear()
-        self.cpp_list.clear()
-        
-        if not os.path.exists(self.target_dir):
-            self.write_system_log(f"Error: Directory '{self.target_dir}' does not exist.", error=True)
-            return
-
-        try:
-            files = sorted(os.listdir(self.target_dir))
-        except Exception as e:
-            self.write_system_log(f"Error listing folder: {str(e)}", error=True)
-            return
-
-        c_count = 0
-        cpp_count = 0
-        search_query = self.search_input.text().lower()
-
-        for filename in files:
-            if search_query and search_query not in filename.lower():
-                continue
-                
-            file_path = os.path.join(self.target_dir, filename)
-            if os.path.isfile(file_path):
-                filename_lower = filename.lower()
-                if filename_lower.endswith(".c"):
-                    item = QListWidgetItem(f"📄  {filename}")
-                    item.setData(Qt.ItemDataRole.UserRole, file_path)
-                    self.c_list.addItem(item)
-                    c_count += 1
-                elif filename_lower.endswith(".cpp") or filename_lower.endswith(".cc") or filename_lower.endswith(".cxx"):
-                    item = QListWidgetItem(f"📄  {filename}")
-                    item.setData(Qt.ItemDataRole.UserRole, file_path)
-                    self.cpp_list.addItem(item)
-                    cpp_count += 1
-
-        self.tab_widget.setTabText(0, f"C Files ({c_count})")
-        self.tab_widget.setTabText(1, f"C++ Files ({cpp_count})")
+        # Refresh the model index
+        self.file_model.setRootPath(self.target_dir)
+        self.file_explorer.setRootIndex(self.file_model.index(self.target_dir))
         
         # Verify active files on disk
         for idx in reversed(range(self.editor_tabs.count())):
@@ -1558,11 +2125,11 @@ class CoderunApp(QMainWindow):
         self.update_editor_ui_state()
 
     def filter_files(self):
-        self.refresh_files()
-
-    def on_sidebar_file_clicked(self, item):
-        filepath = item.data(Qt.ItemDataRole.UserRole)
-        self.open_file_by_path(filepath)
+        query = self.search_input.text().strip().lower()
+        if query:
+            self.file_model.setNameFilters([f"*{query}*"])
+        else:
+            self.file_model.setNameFilters(["*.c", "*.cpp", "*.cc", "*.cxx", "*.h", "*.hpp", "*.txt", "*.md"])
 
     # ==============================================================================
     # 9. Document and Multi-Tab Management
@@ -1597,11 +2164,7 @@ class CoderunApp(QMainWindow):
                 self.active_file_lbl.setText(os.path.basename(editor.filepath))
                 # Compiler toggles
                 ext = os.path.splitext(editor.filepath)[1].lower()
-                has_compiler = False
-                if ext == ".c" and self.gcc_version:
-                    has_compiler = True
-                elif ext in [".cpp", ".cc", ".cxx"] and self.gpp_version:
-                    has_compiler = True
+                has_compiler = ext in [".c", ".cpp", ".cc", ".cxx"]
                 self.run_btn.setEnabled(has_compiler and not self.is_compiling and not self.is_running_program)
                 self.update_statusbar_cursor_info()
 
@@ -1672,6 +2235,24 @@ class CoderunApp(QMainWindow):
         self.apply_theme() # Repaint styles
 
     def on_editor_modified(self, editor):
+        if self.settings.get("auto_save", False):
+            try:
+                content = editor.toPlainText()
+                with open(editor.filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+                editor.is_dirty = False
+                filename = os.path.basename(editor.filepath)
+                for idx in range(self.editor_tabs.count()):
+                    tab = self.editor_tabs.widget(idx)
+                    if tab.findChild(CodeEditor) == editor:
+                        self.editor_tabs.setTabText(idx, filename)
+                        break
+                if self.get_active_editor() == editor:
+                    self.active_file_lbl.setText(filename)
+            except Exception:
+                pass
+            return
+
         if not editor.is_dirty:
             editor.is_dirty = True
             filename = os.path.basename(editor.filepath)
@@ -1768,8 +2349,12 @@ class CoderunApp(QMainWindow):
             if not (filename_lower.endswith(".c") or filename_lower.endswith(".cpp") or 
                     filename_lower.endswith(".cc") or filename_lower.endswith(".cxx") or 
                     filename_lower.endswith(".h") or filename_lower.endswith(".hpp")):
-                # Check active sidebar tab (0 = C, 1 = C++)
-                ext = ".c" if self.tab_widget.currentIndex() == 0 else ".cpp"
+                # Match extension of active editor, fallback to .cpp
+                editor = self.get_active_editor()
+                if editor and editor.filepath.lower().endswith(".c"):
+                    ext = ".c"
+                else:
+                    ext = ".cpp"
                 filename += ext
                 
             filepath = os.path.join(self.target_dir, filename)
@@ -1941,7 +2526,7 @@ class CoderunApp(QMainWindow):
             self.send_btn.setEnabled(False)
             self.refresh_btn.setEnabled(True)
             self.search_input.setEnabled(True)
-            self.tab_widget.setEnabled(True)
+            self.file_explorer.setEnabled(True)
             self.new_file_btn.setEnabled(True)
             self.rename_file_btn.setEnabled(True)
             self.delete_file_btn.setEnabled(True)
@@ -1959,7 +2544,7 @@ class CoderunApp(QMainWindow):
             self.send_btn.setEnabled(False)
             self.refresh_btn.setEnabled(False)
             self.search_input.setEnabled(False)
-            self.tab_widget.setEnabled(False)
+            self.file_explorer.setEnabled(False)
             self.new_file_btn.setEnabled(False)
             self.rename_file_btn.setEnabled(False)
             self.delete_file_btn.setEnabled(False)
@@ -1978,7 +2563,7 @@ class CoderunApp(QMainWindow):
             self.stdin_input.setFocus()
             self.refresh_btn.setEnabled(False)
             self.search_input.setEnabled(False)
-            self.tab_widget.setEnabled(False)
+            self.file_explorer.setEnabled(False)
             self.new_file_btn.setEnabled(False)
             self.rename_file_btn.setEnabled(False)
             self.delete_file_btn.setEnabled(False)
@@ -1996,7 +2581,7 @@ class CoderunApp(QMainWindow):
             self.send_btn.setEnabled(False)
             self.refresh_btn.setEnabled(True)
             self.search_input.setEnabled(True)
-            self.tab_widget.setEnabled(True)
+            self.file_explorer.setEnabled(True)
             self.new_file_btn.setEnabled(True)
             self.rename_file_btn.setEnabled(True)
             self.delete_file_btn.setEnabled(True)
@@ -2014,7 +2599,7 @@ class CoderunApp(QMainWindow):
             self.send_btn.setEnabled(False)
             self.refresh_btn.setEnabled(True)
             self.search_input.setEnabled(True)
-            self.tab_widget.setEnabled(True)
+            self.file_explorer.setEnabled(True)
             self.new_file_btn.setEnabled(True)
             self.rename_file_btn.setEnabled(True)
             self.delete_file_btn.setEnabled(True)
@@ -2030,6 +2615,7 @@ class CoderunApp(QMainWindow):
         self.time_lbl.setText(f"{comp_str}  |  {run_str}")
 
     def run_selected_file(self):
+        print("RUN CLICKED")
         editor = self.get_active_editor()
         if not editor or self.is_compiling or self.is_running_program:
             return
@@ -2044,33 +2630,48 @@ class CoderunApp(QMainWindow):
         self.update_time_display()
         
         filename = os.path.basename(editor.filepath)
+        base_name = os.path.splitext(filename)[0]
         self.is_compiling = True
         self.update_status("Compiling")
         
-        output_binary = os.path.join(self.target_dir, "output.exe")
-        if os.path.exists(output_binary):
+        self.last_output_binary = os.path.abspath(os.path.join(self.target_dir, f"{base_name}.exe"))
+        if os.path.exists(self.last_output_binary):
             try:
-                os.remove(output_binary)
+                os.remove(self.last_output_binary)
             except Exception:
-                self.write_system_log("Warning: Binary 'output.exe' is locked. Force killing running instances...", error=True)
-                subprocess.run(["taskkill", "/f", "/im", "output.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                self.write_system_log(f"Warning: Binary '{base_name}.exe' is locked. Force killing running instances...", error=True)
+                subprocess.run(["taskkill", "/f", "/im", f"{base_name}.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
                 time.sleep(0.2)
                 try:
-                    os.remove(output_binary)
+                    os.remove(self.last_output_binary)
                 except Exception as e:
-                    self.write_system_log(f"Error: Overwriting target 'output.exe' failed. Details: {str(e)}", error=True)
+                    self.write_system_log(f"Error: Overwriting target '{base_name}.exe' failed. Details: {str(e)}", error=True)
                     self.is_compiling = False
                     self.update_status("Error", "Output binary locked")
                     return
 
         ext = os.path.splitext(editor.filepath)[1].lower()
         if ext == ".c":
-            compiler = "gcc"
+            compiler_path = self.gcc_path
+            compiler_name = "gcc"
+            if not compiler_path:
+                self.write_system_log("Error: GCC compiler ('gcc') is not detected on your system.", error=True)
+                self.write_system_log("Please refer to the Compiler Setup Guide in the README to install it via MSYS2.", error=True)
+                self.is_compiling = False
+                self.update_status("Error", "GCC compiler missing")
+                return
         else:
-            compiler = "g++"
+            compiler_path = self.gpp_path
+            compiler_name = "g++"
+            if not compiler_path:
+                self.write_system_log("Error: G++ compiler ('g++') is not detected on your system.", error=True)
+                self.write_system_log("Please refer to the Compiler Setup Guide in the README to install it via MSYS2.", error=True)
+                self.is_compiling = False
+                self.update_status("Error", "G++ compiler missing")
+                return
             
-        compile_cmd = [compiler, filename, "-o", "output.exe"]
-        self.write_system_log(f"Compiling: {' '.join(compile_cmd)}")
+        compile_cmd = [compiler_path, editor.filepath, "-o", self.last_output_binary]
+        self.write_system_log(f"Compiling: {compiler_name} {editor.filepath} -o {self.last_output_binary}")
         self.compile_start_time = time.perf_counter()
         
         # Start QProcess Compiler
@@ -2079,8 +2680,28 @@ class CoderunApp(QMainWindow):
         self.process.readyReadStandardOutput.connect(self.read_compiler_stdout)
         self.process.readyReadStandardError.connect(self.read_compiler_stderr)
         self.process.finished.connect(self.compile_finished)
+        self.process.errorOccurred.connect(self.on_process_error)
         
-        self.process.start(compiler, compile_cmd[1:])
+        self.process.start(compiler_path, compile_cmd[1:])
+
+    def on_process_error(self, error):
+        error_str = "Unknown error occurred during execution."
+        if error == QProcess.ProcessError.FailedToStart:
+            error_str = "The compiler or target binary failed to start. Verify your compiler paths, standard formats, or antivirus settings."
+        elif error == QProcess.ProcessError.Crashed:
+            error_str = "The running process crashed or exited abnormally."
+        elif error == QProcess.ProcessError.Timedout:
+            error_str = "The process timed out."
+        elif error == QProcess.ProcessError.WriteError:
+            error_str = "Failed to write data to standard input (stdin)."
+        elif error == QProcess.ProcessError.ReadError:
+            error_str = "An error occurred while reading from the process stream."
+            
+        self.write_system_log(f"Execution Error: {error_str}", error=True)
+        self.is_compiling = False
+        self.is_running_program = False
+        self.update_status("Error", "Execution failed")
+        self.process = None
 
     def read_compiler_stdout(self):
         data = self.process.readAllStandardOutput().data().decode('utf-8', errors='replace')
@@ -2111,13 +2732,13 @@ class CoderunApp(QMainWindow):
         self.is_running_program = True
         self.update_status("Running")
         
-        output_binary = os.path.join(self.target_dir, "output.exe")
-        if not os.path.exists(output_binary):
+        if not hasattr(self, 'last_output_binary') or not os.path.exists(self.last_output_binary):
             self.write_system_log("Error: Compiled binary was not found.", error=True)
             self.update_status("Error", "Binary missing")
+            self.is_running_program = False
             return
             
-        self.write_system_log("Executing: output.exe")
+        self.write_system_log(f"Executing: {os.path.basename(self.last_output_binary)}")
         self.run_start_time = time.perf_counter()
         
         self.process = QProcess(self)
@@ -2125,8 +2746,9 @@ class CoderunApp(QMainWindow):
         self.process.readyReadStandardOutput.connect(self.read_program_stdout)
         self.process.readyReadStandardError.connect(self.read_program_stderr)
         self.process.finished.connect(self.program_finished)
+        self.process.errorOccurred.connect(self.on_process_error)
         
-        self.process.start(output_binary, [])
+        self.process.start(self.last_output_binary, [])
 
     def read_program_stdout(self):
         data = self.process.readAllStandardOutput().data().decode('utf-8', errors='replace')
