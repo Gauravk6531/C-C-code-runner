@@ -1,9 +1,11 @@
-#include <stdio.h>
+#include<stdio.h>
 
-int main() {
-    // Missing semicolon below
-    printf("This should fail to compile")
+int main()
+{
+    int a = 10;
+    int b = 20;;
+    printf("Hello  %d %d", a, b);
+    return 0;
     
-    // Unresolved variable below
-    return x;
+    
 }

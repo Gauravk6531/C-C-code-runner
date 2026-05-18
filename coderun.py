@@ -1,25 +1,1080 @@
 import os
 import sys
+import re
 import shutil
 import time
 import subprocess
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QListWidget, QListWidgetItem, QPushButton, QTextEdit, QLabel,
-    QTabWidget, QSplitter, QLineEdit, QStatusBar, QFrame, QStyle
+    QListWidget, QListWidgetItem, QPushButton, QTextEdit, QPlainTextEdit,
+    QLabel, QTabWidget, QSplitter, QLineEdit, QStatusBar, QFrame,
+    QStyle, QInputDialog, QMessageBox, QStackedWidget, QCheckBox
 )
-from PySide6.QtCore import QProcess, Qt, QSize, QTimer, QFileSystemWatcher
-from PySide6.QtGui import QFont, QIcon, QKeySequence, QShortcut, QTextCursor, QColor
+from PySide6.QtCore import QProcess, Qt, QSize, QTimer, QFileSystemWatcher, QRegularExpression, QRect, QPoint
+from PySide6.QtGui import (
+    QFont, QIcon, QKeySequence, QShortcut, QTextCursor, QColor,
+    QPainter, QTextFormat, QFontMetrics, QSyntaxHighlighter, QTextCharFormat, QTextDocument
+)
 
+# ==============================================================================
+# 1. C/C++ Syntax Highlighter (Adaptive Light/Dark Themes)
+# ==============================================================================
+class CppSyntaxHighlighter(QSyntaxHighlighter):
+    def __init__(self, parent=None, is_dark=True):
+        super().__init__(parent)
+        self.is_dark = is_dark
+        self.setup_rules()
+        
+    def setup_rules(self):
+        self.highlighting_rules = []
+        
+        # Select visual theme colors
+        c_keyword = "#569cd6" if self.is_dark else "#0933e1"
+        c_type = "#4ec9b0" if self.is_dark else "#037a72"
+        c_prep = "#c586c0" if self.is_dark else "#a100a1"
+        c_comment = "#6a9955" if self.is_dark else "#008000"
+        c_string = "#ce9178" if self.is_dark else "#a31515"
+        c_number = "#b5cea8" if self.is_dark else "#098658"
+        c_function = "#dcdcaa" if self.is_dark else "#795e26"
+        c_operator = "#d4d4d4" if self.is_dark else "#3b3b3b"
+        
+        # Color formats
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(QColor(c_keyword))
+        keyword_format.setFontWeight(QFont.Weight.Bold)
+        
+        keywords = [
+            "char", "class", "const", "double", "enum", "explicit", "export",
+            "extern", "float", "inline", "int", "long", "operator", "private",
+            "protected", "public", "short", "signals", "signed", "slots",
+            "static", "struct", "template", "typedef", "typename", "union",
+            "unsigned", "virtual", "bool", "using", "namespace",
+            "break", "case", "catch", "continue", "default", "do", "else", "for",
+            "goto", "if", "new", "return", "switch", "this", "throw", "try", "while",
+            "delete", "sizeof"
+        ]
+        for word in keywords:
+            pattern = QRegularExpression(rf"\b{word}\b")
+            self.highlighting_rules.append((pattern, keyword_format))
+
+        # Types and STL elements
+        type_format = QTextCharFormat()
+        type_format.setForeground(QColor(c_type))
+        types = ["std", "string", "vector", "map", "set", "cout", "cin", "endl", "printf", "scanf", "iostream"]
+        for t in types:
+            pattern = QRegularExpression(rf"\b{t}\b")
+            self.highlighting_rules.append((pattern, type_format))
+
+        # Function formatting
+        function_format = QTextCharFormat()
+        function_format.setForeground(QColor(c_function))
+        self.highlighting_rules.append((QRegularExpression(r"\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\()"), function_format))
+
+        # Operator formatting
+        operator_format = QTextCharFormat()
+        operator_format.setForeground(QColor(c_operator))
+        operators = ["+", "-", "*", "/", "=", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "&", "|", "!", "%"]
+        for op in operators:
+            pattern = QRegularExpression(QRegularExpression.escape(op))
+            self.highlighting_rules.append((pattern, operator_format))
+
+        # Preprocessor format
+        preprocessor_format = QTextCharFormat()
+        preprocessor_format.setForeground(QColor(c_prep))
+        self.highlighting_rules.append((QRegularExpression(r"#[a-zA-Z]+"), preprocessor_format))
+
+        # Single line comments
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(QColor(c_comment))
+        self.highlighting_rules.append((QRegularExpression(r"//[^\n]*"), comment_format))
+
+        # Multi-line comments format
+        self.multi_line_comment_format = QTextCharFormat()
+        self.multi_line_comment_format.setForeground(QColor(c_comment))
+
+        # String literals
+        string_format = QTextCharFormat()
+        string_format.setForeground(QColor(c_string))
+        self.highlighting_rules.append((QRegularExpression(r"\".*?\""), string_format))
+        self.highlighting_rules.append((QRegularExpression(r"'.*?'"), string_format))
+
+        # Numbers
+        number_format = QTextCharFormat()
+        number_format.setForeground(QColor(c_number))
+        self.highlighting_rules.append((QRegularExpression(r"\b[0-9]+(?:\.[0-9]+)?\b"), number_format))
+
+    def update_theme(self, is_dark):
+        self.is_dark = is_dark
+        self.setup_rules()
+        self.rehighlight()
+
+    def highlightBlock(self, text):
+        # Apply standard single-line rules
+        for pattern, format in self.highlighting_rules:
+            match_iterator = pattern.globalMatch(text)
+            while match_iterator.hasNext():
+                match = match_iterator.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), format)
+
+        # Handle multi-line comments /* ... */
+        self.setCurrentBlockState(0)
+        start_expression = QRegularExpression(r"/\*")
+        end_expression = QRegularExpression(r"\*/")
+
+        start_index = 0
+        if self.previousBlockState() != 1:
+            start_match = start_expression.match(text)
+            start_index = start_match.capturedStart() if start_match.hasMatch() else -1
+        
+        while start_index >= 0:
+            end_match = end_expression.match(text, start_index)
+            end_index = end_match.capturedStart() if end_match.hasMatch() else -1
+            comment_length = 0
+            if end_index == -1:
+                self.setCurrentBlockState(1)
+                comment_length = len(text) - start_index
+            else:
+                comment_length = end_index - start_index + end_match.capturedLength()
+            
+            self.setFormat(start_index, comment_length, self.multi_line_comment_format)
+            start_match = start_expression.match(text, start_index + comment_length)
+            start_index = start_match.capturedStart() if start_match.hasMatch() else -1
+
+
+# ==============================================================================
+# 2. IntelliSense Autocomplete Popover List Widget
+# ==============================================================================
+class AutocompletePopup(QListWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setObjectName("autocompletePopup")
+        self.setStyleSheet("""
+            QListWidget#autocompletePopup {
+                background-color: #252526;
+                border: 1px solid #3c3c3c;
+                border-radius: 4px;
+                color: #d4d4d4;
+                font-family: 'Consolas', monospace;
+                font-size: 11px;
+            }
+            QListWidget#autocompletePopup::item {
+                padding: 4px 8px;
+            }
+            QListWidget#autocompletePopup::item:hover {
+                background-color: #2a2d2e;
+            }
+            QListWidget#autocompletePopup::item:selected {
+                background-color: #094771;
+                color: #ffffff;
+                font-weight: bold;
+            }
+        """)
+        self.hide()
+
+
+# ==============================================================================
+# 3. Line Number Gutter Area Widget
+# ==============================================================================
+class LineNumberArea(QWidget):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+
+    def sizeHint(self):
+        return QSize(self.editor.line_number_area_width(), 0)
+
+    def paintEvent(self, event):
+        self.editor.line_number_area_paint_event(event)
+
+
+# ==============================================================================
+# 4. Minimap Code Preview Widget
+# ==============================================================================
+class Minimap(QPlainTextEdit):
+    def __init__(self, editor, parent=None):
+        super().__init__(parent)
+        self.editor = editor
+        self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        
+        # Hide scrollbars completely
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Disable cursor focus and interaction
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        
+        # Extremely small font
+        font = QFont("Consolas", 2)
+        font.setFixedPitch(True)
+        self.setFont(font)
+        
+        self.setStyleSheet("background-color: #1a1a1a; border: none; border-left: 1px solid #2d2d2d;")
+
+
+# ==============================================================================
+# 5. Custom VS Code-like Code Editor
+# ==============================================================================
+class CodeEditor(QPlainTextEdit):
+    def __init__(self, main_app, parent=None):
+        super().__init__(parent)
+        self.main_app = main_app
+        self.filepath = None
+        self.is_dirty = False
+        self.line_number_area = LineNumberArea(self)
+        
+        # Connect signals for gutter drawing and brace highlighting
+        self.blockCountChanged.connect(self.update_line_number_area_width)
+        self.updateRequest.connect(self.update_line_number_area)
+        self.cursorPositionChanged.connect(self.highlight_editor_effects)
+        
+        self.update_line_number_area_width(0)
+        self.setup_editor()
+
+        # Initialize Autocomplete Popup
+        self.autocomplete_popup = AutocompletePopup(self)
+        self.autocomplete_popup.itemDoubleClicked.connect(self.insert_completion)
+
+    def setup_editor(self):
+        # Configure plain text editor settings
+        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        font = QFont("Consolas", 11)
+        font.setFixedPitch(True)
+        self.setFont(font)
+        
+        # Custom tab stop distance (4 spaces)
+        self.setTabStopDistance(QFontMetrics(font).horizontalAdvance(' ') * 4)
+
+    def line_number_area_width(self):
+        digits = 1
+        max_blocks = max(1, self.blockCount())
+        while max_blocks >= 10:
+            max_blocks /= 10
+            digits += 1
+        space = 15 + self.fontMetrics().horizontalAdvance('9') * digits
+        return space
+
+    def update_line_number_area_width(self, _):
+        self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
+
+    def update_line_number_area(self, rect, dy):
+        if dy:
+            self.line_number_area.scroll(0, dy)
+        else:
+            self.line_number_area.update(0, rect.y(), self.line_number_area.width(), rect.height())
+
+        if rect.contains(self.viewport().rect()):
+            self.update_line_number_area_width(0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        cr = self.contentsRect()
+        self.line_number_area.setGeometry(QRect(cr.left(), cr.top(), self.line_number_area_width(), cr.height()))
+        self.update_autocomplete_popup_position()
+
+    def line_number_area_paint_event(self, event):
+        painter = QPainter(self.line_number_area)
+        is_dark = self.main_app.theme_is_dark
+        gutter_bg = QColor("#1e1e1e") if is_dark else QColor("#f3f3f3")
+        painter.fillRect(event.rect(), gutter_bg)
+
+        active_block = self.textCursor().block().blockNumber()
+
+        block = self.firstVisibleBlock()
+        block_number = block.blockNumber()
+        top = int(self.blockBoundingGeometry(block).translated(self.contentOffset()).top())
+        bottom = top + int(self.blockBoundingRect(block).height())
+
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                number = str(block_number + 1)
+                # Highlight active line number in high-contrast cyan or bold gray
+                if block_number == active_block:
+                    painter.setPen(QColor("#00ffcc") if is_dark else QColor("#007acc"))
+                    font = painter.font()
+                    font.setBold(True)
+                    painter.setFont(font)
+                else:
+                    painter.setPen(QColor("#858585"))
+                    font = painter.font()
+                    font.setBold(False)
+                    painter.setFont(font)
+                    
+                painter.drawText(0, top, self.line_number_area.width() - 5, self.fontMetrics().height(),
+                                 Qt.AlignmentFlag.AlignRight, number)
+
+            block = block.next()
+            top = bottom
+            bottom = top + int(self.blockBoundingRect(block).height())
+            block_number += 1
+
+    def highlight_editor_effects(self):
+        """Combines current line highlighting and brace matching overlays."""
+        extra_selections = []
+        
+        # 1. Highlight active editing line
+        if not self.isReadOnly():
+            selection = QTextEdit.ExtraSelection()
+            line_color = QColor("#282828") if self.main_app.theme_is_dark else QColor("#f2f2f2")
+            selection.format.setBackground(line_color)
+            selection.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+            selection.cursor = self.textCursor()
+            selection.cursor.clearSelection()
+            extra_selections.append(selection)
+            
+        self.setExtraSelections(extra_selections)
+        
+        # 2. Highlight matching parenthesis/braces
+        self.highlight_matching_braces()
+
+    def highlight_matching_braces(self):
+        """Looks for adjacent bracket markers and highlights their matching pairs, or flags errors."""
+        extra_selections = self.extraSelections()
+        cursor = self.textCursor()
+        pos = cursor.position()
+        doc = self.document()
+        
+        char_left = doc.characterAt(pos - 1)
+        char_right = doc.characterAt(pos)
+        
+        pairs = {
+            '(': ')', '[': ']', '{': '}',
+            ')': '(', ']': '[', '}': '{'
+        }
+        
+        target_pos = -1
+        current_char = ''
+        search_pos = -1
+        
+        if char_left in pairs:
+            current_char = char_left
+            search_pos = pos - 1
+        elif char_right in pairs:
+            current_char = char_right
+            search_pos = pos
+            
+        if current_char:
+            match_char = pairs[current_char]
+            direction = 1 if current_char in ['(', '[', '{'] else -1
+            
+            # Find matching bracket position
+            depth = 1
+            idx = search_pos + direction
+            doc_len = doc.characterCount()
+            
+            while 0 <= idx < doc_len:
+                c = doc.characterAt(idx)
+                if c == current_char:
+                    depth += 1
+                elif c == match_char:
+                    depth -= 1
+                    if depth == 0:
+                        target_pos = idx
+                        break
+                idx += direction
+                
+            if target_pos != -1:
+                # Format for matching braces
+                match_format = QTextCharFormat()
+                match_format.setBackground(QColor("#3e3e3e") if self.main_app.theme_is_dark else QColor("#e4e4e4"))
+                match_format.setForeground(QColor("#00ffcc") if self.main_app.theme_is_dark else QColor("#007acc"))
+                match_format.setFontWeight(QFont.Weight.Bold)
+                
+                # Selection 1 (Current Brace)
+                sel1 = QTextEdit.ExtraSelection()
+                sel1.format = match_format
+                sel1.cursor = self.textCursor()
+                sel1.cursor.setPosition(search_pos)
+                sel1.cursor.movePosition(QTextCursor.MoveOperation.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
+                
+                # Selection 2 (Matching Brace)
+                sel2 = QTextEdit.ExtraSelection()
+                sel2.format = match_format
+                sel2.cursor = self.textCursor()
+                sel2.cursor.setPosition(target_pos)
+                sel2.cursor.movePosition(QTextCursor.MoveOperation.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
+                
+                extra_selections.append(sel1)
+                extra_selections.append(sel2)
+            else:
+                # Unmatched opening brace: visual red spellcheck underline error
+                err_format = QTextCharFormat()
+                err_format.setBackground(QColor("#5a1d1d") if self.main_app.theme_is_dark else QColor("#ffd2d2"))
+                err_format.setUnderlineColor(QColor("#be2e13"))
+                err_format.setUnderlineStyle(QTextCharFormat.UnderlineStyle.SpellCheckUnderline)
+                
+                sel = QTextEdit.ExtraSelection()
+                sel.format = err_format
+                sel.cursor = self.textCursor()
+                sel.cursor.setPosition(search_pos)
+                sel.cursor.movePosition(QTextCursor.MoveOperation.NextCharacter, QTextCursor.MoveMode.KeepAnchor)
+                extra_selections.append(sel)
+                
+        self.setExtraSelections(extra_selections)
+
+    def keyPressEvent(self, event):
+        """Intercepts keyboard inputs to emulate professional coding gestures with perfect caret synchronization."""
+        cursor = self.textCursor()
+        key = event.key()
+        text = event.text()
+
+        # 1. Handle Autocomplete popup keyboard overrides
+        if self.autocomplete_popup.isVisible():
+            if key == Qt.Key.Key_Escape:
+                self.autocomplete_popup.hide()
+                event.accept()
+                return
+            elif key in [Qt.Key.Key_Down, Qt.Key.Key_Up]:
+                self.autocomplete_popup.keyPressEvent(event)
+                event.accept()
+                return
+            elif key in [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab]:
+                self.insert_completion()
+                event.accept()
+                return
+
+        # Query text of current block without moving cursor side-effects
+        block = cursor.block()
+        line_text = block.text()
+        pos_in_block = cursor.positionInBlock()
+        line_prefix = line_text[:pos_in_block]
+        line_suffix = line_text[pos_in_block:]
+
+        # 2. Smart Pair Deletion on BACKSPACE
+        if key == Qt.Key.Key_Backspace:
+            if line_prefix and line_suffix:
+                char_left = line_prefix[-1]
+                char_right = line_suffix[0]
+                pairs = {
+                    '(': ')',
+                    '[': ']',
+                    '{': '}',
+                    '<': '>',
+                    '"': '"',
+                    "'": "'"
+                }
+                if char_left in pairs and char_right == pairs[char_left]:
+                    cursor.beginEditBlock()
+                    cursor.deleteChar()          # Deletes right pair character
+                    cursor.deletePreviousChar()  # Deletes left pair character
+                    cursor.endEditBlock()
+                    event.accept()
+                    return
+
+            # Indentation-Aware backspacing: delete 4 spaces if line prefix consists entirely of spaces
+            if line_prefix and all(c == ' ' for c in line_prefix) and len(line_prefix) >= 4 and len(line_prefix) % 4 == 0:
+                cursor.beginEditBlock()
+                for _ in range(4):
+                    cursor.deletePreviousChar()
+                cursor.endEditBlock()
+                event.accept()
+                return
+
+        # 3. Smart Pair Skipping and Auto Pair Creation
+        opening_pairs = {
+            '(': ')',
+            '[': ']',
+            '{': '}',
+            '<': '>',
+            '"': '"',
+            "'": "'"
+        }
+        
+        # Check closing pair skip (e.g. typing closing brace over existing closing brace)
+        if text in [')', ']', '}', '>', '"', "'"]:
+            if line_suffix and line_suffix.startswith(text):
+                cursor.movePosition(QTextCursor.MoveOperation.NextCharacter)
+                self.setTextCursor(cursor)
+                event.accept()
+                return
+
+        # Auto Pair Creation
+        if text in opening_pairs:
+            cursor.insertText(text + opening_pairs[text])
+            cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter)
+            self.setTextCursor(cursor)
+            event.accept()
+            return
+
+        # 4. Map Tab key inside selections to indent/outdent
+        if key == Qt.Key.Key_Tab:
+            if cursor.hasSelection():
+                self.indent_lines(outdent=False)
+            else:
+                cursor.insertText("    ")
+            event.accept()
+            return
+
+        # 5. Map Shift+Tab to outdent
+        if key == Qt.Key.Key_Backtab:
+            self.indent_lines(outdent=True)
+            event.accept()
+            return
+
+        # 6. Smart ENTER Curly Brace auto-indent
+        if key in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
+            char_left = line_prefix[-1] if line_prefix else ""
+            char_right = line_suffix[0] if line_suffix else ""
+            
+            indent = ""
+            for char in line_text:
+                if char.isspace():
+                    indent += char
+                else:
+                    break
+
+            if char_left == "{" and char_right == "}":
+                cursor.beginEditBlock()
+                cursor.insertText("\n" + indent + "    \n" + indent)
+                cursor.movePosition(QTextCursor.MoveOperation.Up)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine)
+                self.setTextCursor(cursor)
+                cursor.endEditBlock()
+                event.accept()
+                return
+            else:
+                cursor.insertText("\n" + indent)
+                event.accept()
+                return
+
+        # Standard keyboard delegate
+        super().keyPressEvent(event)
+        
+        # 7. Scan and invoke autocomplete popups
+        if text.isalnum() or text == '_':
+            self.trigger_autocomplete()
+        else:
+            self.autocomplete_popup.hide()
+
+    # ==============================================================================
+    # 6. IntelliSense Suggestions Logic
+# ==============================================================================
+    def trigger_autocomplete(self):
+        cursor = self.textCursor()
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        word = cursor.selectedText().strip()
+        
+        if len(word) < 2:
+            self.autocomplete_popup.hide()
+            return
+            
+        # Complete dictionary vocab pool
+        keywords = [
+            "char", "class", "const", "double", "enum", "explicit", "extern",
+            "float", "inline", "int", "long", "private", "protected", "public",
+            "short", "static", "struct", "template", "typedef", "typename",
+            "unsigned", "virtual", "bool", "using", "namespace", "return",
+            "break", "case", "continue", "default", "else", "for", "if", "while",
+            "sizeof", "printf", "scanf", "cout", "cin", "endl", "vector", "string",
+            "map", "set", "iostream", "algorithm", "push_back", "size", "clear"
+        ]
+        
+        # Dynamically scan variable/function tokens inside active editor document
+        doc_text = self.toPlainText()
+        doc_words = set(re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", doc_text))
+        
+        total_vocabulary = set(keywords) | doc_words
+        # Exclude active typing word
+        if word in total_vocabulary:
+            total_vocabulary.remove(word)
+            
+        # Filter matching suggestions
+        matches = sorted([w for w in total_vocabulary if w.lower().startswith(word.lower())])
+        
+        if matches:
+            self.autocomplete_popup.clear()
+            self.autocomplete_popup.addItems(matches[:10])  # Cap autocomplete at 10 items
+            self.autocomplete_popup.setCurrentRow(0)
+            
+            self.autocomplete_popup.show()
+            self.update_autocomplete_popup_position()
+        else:
+            self.autocomplete_popup.hide()
+
+    def update_autocomplete_popup_position(self):
+        if not self.autocomplete_popup.isVisible():
+            return
+        rect = self.cursorRect()
+        popup_pos = self.viewport().mapToGlobal(rect.bottomLeft())
+        # Constrain dimensions
+        h = min(150, self.autocomplete_popup.count() * 24 + 4)
+        self.autocomplete_popup.setGeometry(popup_pos.x(), popup_pos.y() + 4, 220, h)
+        self.autocomplete_popup.raise_()
+
+    def insert_completion(self):
+        current_item = self.autocomplete_popup.currentItem()
+        if not current_item:
+            self.autocomplete_popup.hide()
+            return
+            
+        completion = current_item.text()
+        cursor = self.textCursor()
+        cursor.select(QTextCursor.SelectionType.WordUnderCursor)
+        cursor.insertText(completion)
+        self.setTextCursor(cursor)
+        self.autocomplete_popup.hide()
+
+    # ==============================================================================
+    # 7. Advanced IDE Line Manipulations & Gestures
+# ==============================================================================
+    def indent_lines(self, outdent=False):
+        """Indent or outdent selected multiline block in 4-space tab increments."""
+        cursor = self.textCursor()
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        
+        cursor.setPosition(start)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+        start_block = cursor.blockNumber()
+        
+        cursor.setPosition(end)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+        end_block = cursor.blockNumber()
+        
+        cursor.beginEditBlock()
+        for block_num in range(start_block, end_block + 1):
+            block = self.document().findBlockByNumber(block_num)
+            cursor.setPosition(block.position())
+            if outdent:
+                text = block.text()
+                removed = 0
+                for _ in range(4):
+                    if text and text.startswith(" "):
+                        cursor.deleteChar()
+                        text = text[1:]
+                        removed += 1
+                    else:
+                        break
+            else:
+                cursor.insertText("    ")
+        cursor.endEditBlock()
+        
+        # Reselect lines
+        new_start = self.document().findBlockByNumber(start_block).position()
+        new_end = self.document().findBlockByNumber(end_block).position() + self.document().findBlockByNumber(end_block).length() - 1
+        cursor.setPosition(new_start)
+        cursor.setPosition(new_end, QTextCursor.MoveMode.KeepAnchor)
+        self.setTextCursor(cursor)
+
+    def toggle_comment(self):
+        """Toggles standard C/C++ line comments (//) on selection or active line."""
+        cursor = self.textCursor()
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        
+        self.blockSignals(True)
+        cursor.setPosition(start)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+        
+        lines = []
+        # Assemble list of lines inside selection
+        while cursor.position() < end or (cursor.position() == end and start == end):
+            line_pos = cursor.position()
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine)
+            line_text = cursor.selectedText()
+            cursor.clearSelection()
+            lines.append((line_pos, line_text))
+            
+            if not cursor.movePosition(QTextCursor.MoveOperation.Down) or cursor.position() >= self.document().characterCount() - 1:
+                break
+            cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+            
+        all_commented = True
+        for _, text in lines:
+            trimmed = text.lstrip()
+            if trimmed and not trimmed.startswith("//"):
+                all_commented = False
+                break
+                
+        cursor.beginEditBlock()
+        for pos, text in reversed(lines):
+            cursor.setPosition(pos)
+            cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+            if all_commented:
+                # Remove comment markers
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+                line_content = cursor.selectedText()
+                trimmed = line_content.lstrip()
+                if trimmed.startswith("// "):
+                    new_line = line_content.replace("// ", "", 1)
+                elif trimmed.startswith("//"):
+                    new_line = line_content.replace("//", "", 1)
+                else:
+                    new_line = line_content
+                cursor.insertText(new_line)
+            else:
+                # Prepend comment markers preserving leading indentation
+                indent = ""
+                for char in text:
+                    if char.isspace():
+                        indent += char
+                    else:
+                        break
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+                line_content = cursor.selectedText()
+                new_line = indent + "// " + line_content.lstrip()
+                cursor.insertText(new_line)
+        cursor.endEditBlock()
+        self.blockSignals(False)
+        self.main_app.on_editor_modified(self)
+
+    def toggle_block_comment(self):
+        """Wraps selected text blocks inside /* ... */ block comments (Shift+Alt+A)."""
+        cursor = self.textCursor()
+        if not cursor.hasSelection():
+            cursor.insertText("/*  */")
+            cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter)
+            cursor.movePosition(QTextCursor.MoveOperation.PreviousCharacter)
+            self.setTextCursor(cursor)
+            return
+            
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        
+        cursor.setPosition(start)
+        cursor.insertText("/* ")
+        cursor.setPosition(end + 3)
+        cursor.insertText(" */")
+        self.main_app.on_editor_modified(self)
+
+    def duplicate_line(self):
+        """Duplicates active line or selected block immediately below (Ctrl+D)."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            text = cursor.selectedText()
+            pos = cursor.selectionEnd()
+            cursor.setPosition(pos)
+            cursor.insertText(text)
+        else:
+            cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+            line_start = cursor.position()
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine)
+            line_text = cursor.selectedText()
+            cursor.clearSelection()
+            cursor.insertText("\n" + line_text)
+        self.main_app.on_editor_modified(self)
+
+    def delete_line(self):
+        """Deletes active line completely (Ctrl+Shift+K)."""
+        cursor = self.textCursor()
+        cursor.beginEditBlock()
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        cursor.deleteChar() # trailing newline
+        cursor.endEditBlock()
+        self.main_app.on_editor_modified(self)
+
+    def move_lines(self, direction):
+        """Moves selected lines or current active block up or down (Alt+Up/Down)."""
+        cursor = self.textCursor()
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        
+        cursor.setPosition(start)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+        line_start = cursor.blockNumber()
+        
+        cursor.setPosition(end)
+        cursor.movePosition(QTextCursor.MoveOperation.EndOfLine)
+        line_end = cursor.blockNumber()
+        
+        if direction == -1: # Move block up
+            if line_start == 0:
+                return
+            target_block = self.document().findBlockByNumber(line_start - 1)
+            target_text = target_block.text()
+            
+            # Select target lines
+            cursor.setPosition(self.document().findBlockByNumber(line_start).position())
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            for _ in range(line_end - line_start):
+                cursor.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            selected_text = cursor.selectedText()
+            
+            cursor.beginEditBlock()
+            cursor.removeSelectedText()
+            cursor.deletePreviousChar()
+            
+            cursor.setPosition(self.document().findBlockByNumber(line_start - 1).position())
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+            
+            cursor.insertText(selected_text + "\n" + target_text)
+            
+            new_pos = self.document().findBlockByNumber(line_start - 1).position()
+            cursor.setPosition(new_pos)
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            for _ in range(line_end - line_start):
+                cursor.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
+            cursor.endEditBlock()
+            
+        elif direction == 1: # Move block down
+            if line_end >= self.document().blockCount() - 1:
+                return
+            target_block = self.document().findBlockByNumber(line_end + 1)
+            target_text = target_block.text()
+            
+            # Select lines
+            cursor.setPosition(self.document().findBlockByNumber(line_start).position())
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            for _ in range(line_end - line_start):
+                cursor.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            selected_text = cursor.selectedText()
+            
+            cursor.beginEditBlock()
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+            
+            cursor.setPosition(self.document().findBlockByNumber(line_start + (line_end - line_start) + 1).position())
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+            
+            cursor.insertText(target_text + "\n" + selected_text)
+            
+            new_pos = self.document().findBlockByNumber(line_start + 1).position()
+            cursor.setPosition(new_pos)
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            for _ in range(line_end - line_start):
+                cursor.movePosition(QTextCursor.MoveOperation.NextBlock, QTextCursor.MoveMode.KeepAnchor)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            self.setTextCursor(cursor)
+            cursor.endEditBlock()
+            
+        self.main_app.on_editor_modified(self)
+
+
+# ==============================================================================
+# 6. Find & Replace Floating Widget Panel
+# ==============================================================================
+class FindReplacePanel(QFrame):
+    def __init__(self, main_app, parent=None):
+        super().__init__(parent)
+        self.main_app = main_app
+        self.setObjectName("findReplacePanel")
+        self.setup_panel()
+        
+    def setup_panel(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+        
+        # Row 1: Find Controls
+        row1 = QHBoxLayout()
+        self.find_input = QLineEdit()
+        self.find_input.setPlaceholderText("Find...")
+        self.find_input.returnPressed.connect(self.find_next)
+        
+        self.case_box = QPushButton("Aa")
+        self.case_box.setCheckable(True)
+        self.case_box.setFixedWidth(30)
+        self.case_box.setToolTip("Match Case")
+        
+        self.next_btn = QPushButton("Next")
+        self.next_btn.clicked.connect(self.find_next)
+        
+        self.prev_btn = QPushButton("Prev")
+        self.prev_btn.clicked.connect(self.find_prev)
+        
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setFixedWidth(24)
+        self.close_btn.clicked.connect(self.hide)
+        
+        row1.addWidget(self.find_input)
+        row1.addWidget(self.case_box)
+        row1.addWidget(self.next_btn)
+        row1.addWidget(self.prev_btn)
+        row1.addWidget(self.close_btn)
+        
+        # Row 2: Replace Controls
+        self.replace_row = QWidget()
+        row2 = QHBoxLayout(self.replace_row)
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setSpacing(6)
+        
+        self.replace_input = QLineEdit()
+        self.replace_input.setPlaceholderText("Replace with...")
+        
+        self.replace_btn = QPushButton("Replace")
+        self.replace_btn.clicked.connect(self.replace_text)
+        
+        self.all_btn = QPushButton("Replace All")
+        self.all_btn.clicked.connect(self.replace_all)
+        
+        row2.addWidget(self.replace_input)
+        row2.addWidget(self.replace_btn)
+        row2.addWidget(self.all_btn)
+        
+        layout.addLayout(row1)
+        layout.addWidget(self.replace_row)
+        self.hide()
+
+    def find_next(self):
+        editor = self.main_app.get_active_editor()
+        if not editor:
+            return
+        search_text = self.find_input.text()
+        if not search_text:
+            return
+            
+        flags = QTextDocument.FindFlag(0)
+        if self.case_box.isChecked():
+            flags |= QTextDocument.FindFlag.FindCaseSensitively
+            
+        found = editor.find(search_text, flags)
+        if not found:
+            # Wrap around from start
+            cursor = editor.textCursor()
+            cursor.setPosition(0)
+            editor.setTextCursor(cursor)
+            editor.find(search_text, flags)
+            
+    def find_prev(self):
+        editor = self.main_app.get_active_editor()
+        if not editor:
+            return
+        search_text = self.find_input.text()
+        if not search_text:
+            return
+            
+        flags = QTextDocument.FindFlag.FindBackward
+        if self.case_box.isChecked():
+            flags |= QTextDocument.FindFlag.FindCaseSensitively
+            
+        found = editor.find(search_text, flags)
+        if not found:
+            # Wrap around from end
+            cursor = editor.textCursor()
+            cursor.setPosition(editor.document().characterCount() - 1)
+            editor.setTextCursor(cursor)
+            editor.find(search_text, flags)
+            
+    def replace_text(self):
+        editor = self.main_app.get_active_editor()
+        if not editor:
+            return
+        cursor = editor.textCursor()
+        if cursor.selectedText() == self.find_input.text():
+            cursor.insertText(self.replace_input.text())
+            editor.setTextCursor(cursor)
+        self.find_next()
+        
+    def replace_all(self):
+        editor = self.main_app.get_active_editor()
+        if not editor:
+            return
+        search_text = self.find_input.text()
+        replace_text = self.replace_input.text()
+        if not search_text:
+            return
+            
+        cursor = editor.textCursor()
+        cursor.beginEditBlock()
+        cursor.setPosition(0)
+        editor.setTextCursor(cursor)
+        
+        flags = QTextDocument.FindFlag(0)
+        if self.case_box.isChecked():
+            flags |= QTextDocument.FindFlag.FindCaseSensitively
+            
+        count = 0
+        while editor.find(search_text, flags):
+            c = editor.textCursor()
+            c.insertText(replace_text)
+            count += 1
+            
+        cursor.endEditBlock()
+        self.main_app.write_system_log(f"Replaced {count} occurrences of '{search_text}'", success=True)
+
+
+# ==============================================================================
+# 7. Sleek Welcome Landing Page Widget
+# ==============================================================================
+class WelcomeWidget(QFrame):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("welcomeWidget")
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.setSpacing(14)
+        
+        logo = QLabel("💻")
+        logo.setStyleSheet("font-size: 64px; margin-bottom: 5px;")
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(logo)
+        
+        title = QLabel("coderun C/C++ IDE")
+        title.setObjectName("welcomeTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+        
+        subtitle = QLabel("A lightweight, blazingly fast C/C++ development workspace")
+        subtitle.setObjectName("welcomeSubtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle)
+        
+        # Shortcut Guides
+        shortcuts = [
+            ("New File", "Ctrl + N"),
+            ("Open File", "Ctrl + O"),
+            ("Open Folder", "📂 Open Folder Button"),
+            ("Save Active File", "Ctrl + S"),
+            ("Save File As", "Ctrl + Shift + S"),
+            ("Toggle Comments", "Ctrl + /"),
+            ("Block Comment", "Shift + Alt + A"),
+            ("Duplicate Lines", "Ctrl + D"),
+            ("Move Lines Block", "Alt + Up / Down"),
+            ("Delete Line Block", "Ctrl + Shift + K"),
+            ("Find / Replace", "Ctrl + F / Ctrl + H"),
+            ("Compile & Run", "F5 / Ctrl + R"),
+        ]
+        
+        grid_container = QWidget()
+        grid_layout = QVBoxLayout(grid_container)
+        grid_layout.setSpacing(6)
+        
+        for action, key in shortcuts:
+            row = QHBoxLayout()
+            row.setSpacing(25)
+            
+            lbl_action = QLabel(action)
+            lbl_action.setStyleSheet("color: #858585; font-size: 11px;")
+            lbl_action.setAlignment(Qt.AlignmentFlag.AlignRight)
+            lbl_action.setFixedWidth(180)
+            
+            lbl_key = QLabel(key)
+            lbl_key.setStyleSheet("color: #569cd6; font-family: 'Consolas', monospace; font-size: 11px; font-weight: bold;")
+            lbl_key.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            lbl_key.setFixedWidth(180)
+            
+            row.addWidget(lbl_action)
+            row.addWidget(lbl_key)
+            grid_layout.addLayout(row)
+            
+        layout.addWidget(grid_container)
+
+
+# ==============================================================================
+# 8. Main IDE Application Window Class
+# ==============================================================================
 class CoderunApp(QMainWindow):
     def __init__(self, target_dir=None):
         super().__init__()
         
-        # Use target directory if provided, otherwise default to current working directory
+        # Workspace Configuration
         self.target_dir = os.path.abspath(target_dir) if target_dir else os.getcwd()
+        self.theme_is_dark = True
         
-        # Application State
-        self.selected_file = None
+        # Asynchronous Process Execution State
         self.process = None
         self.compile_start_time = 0
         self.compile_time = 0
@@ -28,48 +1083,41 @@ class CoderunApp(QMainWindow):
         self.is_compiling = False
         self.is_running_program = False
         
-        # Compiler Availability
+        # Verify Compiler Availability
         self.gcc_version = self.get_compiler_version("gcc")
         self.gpp_version = self.get_compiler_version("g++")
         
         # UI Setup
         self.init_ui()
         self.refresh_files()
-        self.update_status("Ready")
-        self.write_system_log(f"Successfully loaded workspace folder: {self.target_dir}", success=True)
         
-        # File system watcher for instant real-time auto-refresh!
+        # File system watcher for auto-refresh list updates
         self.watcher = QFileSystemWatcher(self)
         if os.path.exists(self.target_dir):
             self.watcher.addPath(self.target_dir)
             self.watcher.directoryChanged.connect(self.refresh_files)
 
     def get_compiler_version(self, compiler):
-        """Checks if a compiler is available in the system PATH and returns its version."""
         if not shutil.which(compiler):
             return None
         try:
-            # Run compiler --version
             result = subprocess.run([compiler, "--version"], capture_output=True, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
-            first_line = result.stdout.split('\n')[0]
-            # Extract version from first line e.g., 'gcc (MinGW-W64 x86_64-posix-seh...) 11.2.0'
-            return first_line
+            return result.stdout.split('\n')[0]
         except Exception:
-            return "Found (Unknown Version)"
+            return "Found (Unknown)"
 
     def init_ui(self):
-        self.setWindowTitle("coderun - Local C/C++ Runner")
-        self.resize(1000, 650)
-        self.setMinimumSize(800, 500)
+        self.setWindowTitle("coderun - C/C++ IDE")
+        self.resize(1200, 800)
+        self.setMinimumSize(900, 600)
         
-        # Main Widget & Layout
         main_widget = QWidget()
         main_layout = QVBoxLayout(main_widget)
         main_layout.setContentsMargins(10, 10, 10, 10)
         main_layout.setSpacing(8)
         self.setCentralWidget(main_widget)
         
-        # --- Top Banner: Folder display and controls ---
+        # --- Top Banner Layout ---
         header_widget = QFrame()
         header_widget.setObjectName("headerWidget")
         header_widget.setFrameShape(QFrame.Shape.StyledPanel)
@@ -81,7 +1129,7 @@ class CoderunApp(QMainWindow):
         header_layout.addWidget(folder_icon)
         
         dir_info_layout = QVBoxLayout()
-        dir_title = QLabel("CURRENT WORKING DIRECTORY")
+        dir_title = QLabel("WORKSPACE DIRECTORY")
         dir_title.setStyleSheet("color: #858585; font-size: 10px; font-weight: bold; letter-spacing: 1px;")
         self.dir_path_lbl = QLabel(self.target_dir)
         self.dir_path_lbl.setStyleSheet("color: #ffffff; font-size: 13px; font-weight: bold;")
@@ -90,7 +1138,11 @@ class CoderunApp(QMainWindow):
         header_layout.addLayout(dir_info_layout)
         header_layout.addStretch()
         
-        # Top Header Actions
+        # Header Controls
+        self.theme_btn = QPushButton("Toggle Theme")
+        self.theme_btn.clicked.connect(self.toggle_theme)
+        header_layout.addWidget(self.theme_btn)
+        
         self.open_folder_btn = QPushButton("Open Folder")
         self.open_folder_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
         self.open_folder_btn.clicked.connect(self.select_folder)
@@ -103,22 +1155,20 @@ class CoderunApp(QMainWindow):
         
         main_layout.addWidget(header_widget)
         
-        # --- Missing Compiler Warning ---
+        # --- Missing Compiler warning banner ---
         if not self.gcc_version and not self.gpp_version:
             self.warning_banner = QFrame()
             self.warning_banner.setStyleSheet("background-color: #5a1d1d; border: 1px solid #be2e13; border-radius: 4px;")
             warn_layout = QHBoxLayout(self.warning_banner)
             warn_layout.setContentsMargins(12, 6, 12, 6)
-            warn_lbl = QLabel("⚠️ NO COMPILER DETECTED: 'gcc' and 'g++' were not found in your PATH. Please install MinGW-w64 or another compiler to run files.")
+            warn_lbl = QLabel("⚠️ NO COMPILER DETECTED: C/C++ compilation tools (gcc/g++) are missing from your PATH. Setup compilers globally to run programs.")
             warn_lbl.setStyleSheet("color: #ffcccc; font-weight: bold;")
             warn_layout.addWidget(warn_lbl)
             main_layout.addWidget(self.warning_banner)
-        else:
-            self.warning_banner = None
             
-        # --- Splitter (Left: File List Tab, Right: Console & Action Bar) ---
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setStyleSheet("QSplitter::handle { background-color: #2d2d2d; width: 4px; }")
+        # --- Splitter UI layout ---
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.setStyleSheet("QSplitter::handle { background-color: #2d2d2d; width: 4px; }")
         
         # -- Left Sidebar Widget --
         left_widget = QWidget()
@@ -126,35 +1176,50 @@ class CoderunApp(QMainWindow):
         left_layout.setContentsMargins(0, 0, 5, 0)
         left_layout.setSpacing(6)
         
-        # File Search Input
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("🔍 Filter files...")
         self.search_input.textChanged.connect(self.filter_files)
         left_layout.addWidget(self.search_input)
         
-        # Tab Widget for C vs C++ files
         self.tab_widget = QTabWidget()
         
-        # C Files Tab
         self.c_list = QListWidget()
-        self.c_list.itemClicked.connect(self.on_file_selected)
+        self.c_list.itemClicked.connect(self.on_sidebar_file_clicked)
         self.tab_widget.addTab(self.c_list, "C Files (.c)")
         
-        # C++ Files Tab
         self.cpp_list = QListWidget()
-        self.cpp_list.itemClicked.connect(self.on_file_selected)
+        self.cpp_list.itemClicked.connect(self.on_sidebar_file_clicked)
         self.tab_widget.addTab(self.cpp_list, "C++ Files (.cpp)")
         
         left_layout.addWidget(self.tab_widget)
-        splitter.addWidget(left_widget)
         
-        # -- Right Main Console Widget --
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(5, 0, 0, 0)
-        right_layout.setSpacing(8)
+        # Sidebar Actions Toolbar
+        sidebar_actions = QHBoxLayout()
+        sidebar_actions.setSpacing(4)
         
-        # File Action Panel
+        self.new_file_btn = QPushButton("New File")
+        self.new_file_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+        self.new_file_btn.clicked.connect(self.new_file)
+        sidebar_actions.addWidget(self.new_file_btn)
+        
+        self.rename_file_btn = QPushButton("Rename")
+        self.rename_file_btn.clicked.connect(self.rename_file)
+        sidebar_actions.addWidget(self.rename_file_btn)
+        
+        self.delete_file_btn = QPushButton("Delete")
+        self.delete_file_btn.clicked.connect(self.delete_file)
+        sidebar_actions.addWidget(self.delete_file_btn)
+        
+        left_layout.addLayout(sidebar_actions)
+        main_splitter.addWidget(left_widget)
+        
+        # -- Right Main Stack Layout (Toolbar actions + Code Workspace / Welcome Widget + Output console) --
+        right_panel_container = QWidget()
+        right_panel_layout = QVBoxLayout(right_panel_container)
+        right_panel_layout.setContentsMargins(5, 0, 0, 0)
+        right_panel_layout.setSpacing(8)
+        
+        # Actions Panel block
         actions_frame = QFrame()
         actions_frame.setObjectName("actionsFrame")
         actions_frame.setFrameShape(QFrame.Shape.StyledPanel)
@@ -167,279 +1232,302 @@ class CoderunApp(QMainWindow):
         actions_layout.addWidget(self.active_file_lbl)
         actions_layout.addStretch()
         
-        # Performance Timing Labels
+        # Performance timing stats
         self.time_lbl = QLabel("Compile: --s  |  Run: --s")
         self.time_lbl.setStyleSheet("color: #858585; font-family: 'Consolas'; font-size: 11px;")
         actions_layout.addWidget(self.time_lbl)
         
-        # Run / Stop / Clear buttons
+        # Save / Save As / Compile / Stop controls
+        self.save_btn = QPushButton("Save")
+        self.save_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self.save_btn.clicked.connect(self.save_active_file)
+        actions_layout.addWidget(self.save_btn)
+        
+        self.save_as_btn = QPushButton("Save As")
+        self.save_as_btn.clicked.connect(self.save_as_file)
+        actions_layout.addWidget(self.save_as_btn)
+        
         self.run_btn = QPushButton("RUN FILE")
         self.run_btn.setObjectName("runBtn")
-        self.run_btn.setEnabled(False)
         self.run_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.run_btn.clicked.connect(self.run_selected_file)
         actions_layout.addWidget(self.run_btn)
         
         self.stop_btn = QPushButton("STOP")
         self.stop_btn.setObjectName("stopBtn")
-        self.stop_btn.setEnabled(False)
         self.stop_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
         self.stop_btn.clicked.connect(self.terminate_process)
         actions_layout.addWidget(self.stop_btn)
         
-        self.clear_btn = QPushButton("Clear Console")
+        self.clear_btn = QPushButton("Clear Output")
         self.clear_btn.clicked.connect(self.clear_console)
         actions_layout.addWidget(self.clear_btn)
         
-        right_layout.addWidget(actions_frame)
+        right_panel_layout.addWidget(actions_frame)
         
-        # Console output
+        # Find and Replace Panel (Floats above workspace)
+        self.find_replace_panel = FindReplacePanel(self)
+        right_panel_layout.addWidget(self.find_replace_panel)
+        
+        # Vertical Workspace Splitter (Editor vs Console)
+        workspace_splitter = QSplitter(Qt.Orientation.Vertical)
+        workspace_splitter.setStyleSheet("QSplitter::handle { background-color: #2d2d2d; height: 4px; }")
+        
+        # Editor Workspace Stack (0 = Welcome landing page, 1 = Editor Tabs)
+        self.workspace_stack = QStackedWidget()
+        
+        self.welcome_widget = WelcomeWidget()
+        self.workspace_stack.addWidget(self.welcome_widget)
+        
+        # Multi-tab widget representing open files
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.setTabsClosable(True)
+        self.editor_tabs.setMovable(True)
+        self.editor_tabs.tabCloseRequested.connect(self.close_tab)
+        self.editor_tabs.currentChanged.connect(self.on_active_tab_changed)
+        self.workspace_stack.addWidget(self.editor_tabs)
+        
+        workspace_splitter.addWidget(self.workspace_stack)
+        
+        # Bottom Console Stack Layout
+        console_widget = QWidget()
+        console_layout = QVBoxLayout(console_widget)
+        console_layout.setContentsMargins(0, 0, 0, 0)
+        console_layout.setSpacing(6)
+        
         self.console = QTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
-        self.console.setPlaceholderText("Console output will be displayed here...")
-        right_layout.addWidget(self.console)
+        self.console.setPlaceholderText("Console output compiles and streams here...")
+        console_layout.addWidget(self.console)
         
-        # Console Interactive Stdin Input Bar
+        # Stdin input bar
         input_layout = QHBoxLayout()
         input_lbl = QLabel("Standard Input:")
         input_lbl.setStyleSheet("color: #858585; font-size: 11px;")
         self.stdin_input = QLineEdit()
-        self.stdin_input.setPlaceholderText("Enter interactive input for standard input (stdin) here and press Enter...")
-        self.stdin_input.setEnabled(False)
+        self.stdin_input.setPlaceholderText("Provide program inputs here and hit Enter to feed standard input (stdin)...")
         self.stdin_input.returnPressed.connect(self.send_stdin)
         
         self.send_btn = QPushButton("Send")
-        self.send_btn.setEnabled(False)
         self.send_btn.clicked.connect(self.send_stdin)
         
         input_layout.addWidget(input_lbl)
         input_layout.addWidget(self.stdin_input)
         input_layout.addWidget(self.send_btn)
-        right_layout.addLayout(input_layout)
+        console_layout.addLayout(input_layout)
         
-        splitter.addWidget(right_widget)
+        workspace_splitter.addWidget(console_widget)
         
-        # Set initial splitter widths (30% left, 70% right)
-        splitter.setSizes([300, 700])
-        main_layout.addWidget(splitter)
+        workspace_splitter.setSizes([480, 250])
+        right_panel_layout.addWidget(workspace_splitter)
         
-        # --- Bottom Status Bar ---
+        main_splitter.addWidget(right_panel_container)
+        main_splitter.setSizes([250, 950])
+        main_layout.addWidget(main_splitter)
+        
+        # --- Bottom Status Bar Configuration ---
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         
-        # Set up keyboard shortcuts
+        self.cursor_info_lbl = QLabel("")
+        self.cursor_info_lbl.setStyleSheet("color: #ffffff; font-family: 'Consolas', monospace; font-size: 11px; margin-right: 15px;")
+        self.status_bar.addPermanentWidget(self.cursor_info_lbl)
+        
+        # Map Keyboard Shortcuts
         self.setup_shortcuts()
         
-        # Apply premium dark developer stylesheet
+        # Apply CSS Themes
         self.apply_theme()
+        self.update_editor_ui_state()
         self.update_compiler_status()
 
     def setup_shortcuts(self):
-        """Sets up hotkeys/shortcuts for fast development workflow."""
-        # Ctrl+R or F5 to Run File
-        self.shortcut_run = QShortcut(QKeySequence("F5"), self)
-        self.shortcut_run.activated.connect(self.run_selected_file)
-        self.shortcut_run_ctrl = QShortcut(QKeySequence("Ctrl+R"), self)
-        self.shortcut_run_ctrl.activated.connect(self.run_selected_file)
+        # Ctrl+N -> New File
+        self.sc_new = QShortcut(QKeySequence("Ctrl+N"), self)
+        self.sc_new.activated.connect(self.new_file)
         
-        # F6 or Ctrl+Shift+R to Refresh file list
-        self.shortcut_refresh = QShortcut(QKeySequence("F6"), self)
-        self.shortcut_refresh.activated.connect(self.refresh_files)
-        self.shortcut_refresh_ctrl = QShortcut(QKeySequence("Ctrl+Shift+R"), self)
-        self.shortcut_refresh_ctrl.activated.connect(self.refresh_files)
+        # Ctrl+O -> Open File dialog
+        self.sc_open = QShortcut(QKeySequence("Ctrl+O"), self)
+        self.sc_open.activated.connect(self.open_file_dialog)
         
-        # Ctrl+L to Clear Output
-        self.shortcut_clear = QShortcut(QKeySequence("Ctrl+L"), self)
-        self.shortcut_clear.activated.connect(self.clear_console)
+        # Ctrl+S -> Save
+        self.sc_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.sc_save.activated.connect(self.save_active_file)
         
-        # Esc to stop running process
-        self.shortcut_stop = QShortcut(QKeySequence("Escape"), self)
-        self.shortcut_stop.activated.connect(self.terminate_process)
+        # Ctrl+Shift+S -> Save As
+        self.sc_save_as = QShortcut(QKeySequence("Ctrl+Shift+S"), self)
+        self.sc_save_as.activated.connect(self.save_as_file)
+        
+        # Ctrl+F -> Show Find Replace Panel
+        self.sc_find = QShortcut(QKeySequence("Ctrl+F"), self)
+        self.sc_find.activated.connect(self.show_find_panel)
+        
+        # Ctrl+H -> Show Replace Panel
+        self.sc_replace = QShortcut(QKeySequence("Ctrl+H"), self)
+        self.sc_replace.activated.connect(self.show_replace_panel)
+        
+        # Ctrl+/ -> Toggle comment
+        self.sc_comment = QShortcut(QKeySequence("Ctrl+/"), self)
+        self.sc_comment.activated.connect(self.toggle_editor_comment)
+
+        # Shift+Alt+A -> Toggle block comment
+        self.sc_block_comment = QShortcut(QKeySequence("Shift+Alt+A"), self)
+        self.sc_block_comment.activated.connect(self.toggle_editor_block_comment)
+        
+        # F5 / Ctrl+R -> Run
+        self.sc_run1 = QShortcut(QKeySequence("F5"), self)
+        self.sc_run1.activated.connect(self.run_selected_file)
+        self.sc_run2 = QShortcut(QKeySequence("Ctrl+R"), self)
+        self.sc_run2.activated.connect(self.run_selected_file)
+        
+        # F6 / Ctrl+Shift+R -> Refresh
+        self.sc_ref1 = QShortcut(QKeySequence("F6"), self)
+        self.sc_ref1.activated.connect(self.refresh_files)
+        self.sc_ref2 = QShortcut(QKeySequence("Ctrl+Shift+R"), self)
+        self.sc_ref2.activated.connect(self.refresh_files)
+        
+        # Escape -> Stop / Terminate processes
+        self.sc_stop = QShortcut(QKeySequence("Escape"), self)
+        self.sc_stop.activated.connect(self.terminate_process)
+        
+        # Ctrl+L -> Clear output console
+        self.sc_clear = QShortcut(QKeySequence("Ctrl+L"), self)
+        self.sc_clear.activated.connect(self.clear_console)
+
+        # Line manipulating shortcuts delegated to active editor
+        self.sc_dup = QShortcut(QKeySequence("Ctrl+D"), self)
+        self.sc_dup.activated.connect(lambda: self.delegate_editor_shortcut("duplicate_line"))
+        
+        self.sc_del = QShortcut(QKeySequence("Ctrl+Shift+K"), self)
+        self.sc_del.activated.connect(lambda: self.delegate_editor_shortcut("delete_line"))
+        
+        self.sc_move_up = QShortcut(QKeySequence("Alt+Up"), self)
+        self.sc_move_up.activated.connect(lambda: self.delegate_editor_shortcut("move_lines", -1))
+        
+        self.sc_move_down = QShortcut(QKeySequence("Alt+Down"), self)
+        self.sc_move_down.activated.connect(lambda: self.delegate_editor_shortcut("move_lines", 1))
+
+    def delegate_editor_shortcut(self, method_name, *args):
+        editor = self.get_active_editor()
+        if editor:
+            method = getattr(editor, method_name)
+            method(*args)
 
     def apply_theme(self):
-        """Sets custom stylesheets that evoke premium lightweight IDE feel (e.g., VS Code)."""
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #1e1e1e;
-            }
-            QWidget {
-                color: #d4d4d4;
-                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
-                font-size: 13px;
-            }
-            QFrame#headerWidget {
-                background-color: #252526;
-                border: 1px solid #2d2d2d;
-                border-radius: 6px;
-            }
-            QFrame#actionsFrame {
-                background-color: #252526;
-                border: 1px solid #2d2d2d;
-                border-radius: 4px;
-            }
-            QTabWidget::pane {
-                border: 1px solid #2d2d2d;
-                background-color: #252526;
-                border-bottom-left-radius: 6px;
-                border-bottom-right-radius: 6px;
-            }
-            QTabBar::tab {
-                background-color: #1e1e1e;
-                color: #969696;
-                padding: 8px 16px;
-                border: 1px solid #2d2d2d;
-                border-bottom: none;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
-            }
-            QTabBar::tab:selected {
-                background-color: #252526;
-                color: #ffffff;
-                border-bottom: 2px solid #0e78c8;
-                font-weight: bold;
-            }
-            QTabBar::tab:hover:!selected {
-                background-color: #2d2d2e;
-                color: #ffffff;
-            }
-            QListWidget {
-                background-color: #252526;
-                border: none;
-                padding: 4px;
-            }
-            QListWidget::item {
-                padding: 8px 10px;
-                border-radius: 4px;
-                margin-bottom: 2px;
-                color: #cccccc;
-            }
-            QListWidget::item:hover {
-                background-color: #2a2d2e;
-                color: #ffffff;
-            }
-            QListWidget::item:selected {
-                background-color: #37373d;
-                color: #4ec9b0;
-                font-weight: bold;
-            }
-            QLineEdit {
-                background-color: #3c3c3c;
-                border: 1px solid #3c3c3c;
-                border-radius: 4px;
-                padding: 6px 10px;
-                color: #ffffff;
-            }
-            QLineEdit:focus {
-                border: 1px solid #007acc;
-                background-color: #2d2d2d;
-            }
-            QLineEdit:disabled {
-                background-color: #1e1e1e;
-                color: #5a5a5a;
-                border: 1px solid #2d2d2d;
-            }
-            QPushButton {
-                background-color: #3c3c3c;
-                border: 1px solid #3c3c3c;
-                border-radius: 4px;
-                padding: 6px 14px;
-                font-weight: bold;
-                color: #e1e1e1;
-            }
-            QPushButton:hover {
-                background-color: #4c4c4c;
-                color: #ffffff;
-            }
-            QPushButton:pressed {
-                background-color: #252526;
-            }
-            QPushButton:disabled {
-                background-color: #2d2d2d;
-                color: #5a5a5a;
-                border: 1px solid #2d2d2d;
-            }
-            QPushButton#runBtn {
-                background-color: #0e639c;
-                border: 1px solid #0e639c;
-                color: #ffffff;
-            }
-            QPushButton#runBtn:hover {
-                background-color: #1177bb;
-            }
-            QPushButton#runBtn:pressed {
-                background-color: #0c5282;
-            }
-            QPushButton#stopBtn {
-                background-color: #9a2617;
-                border: 1px solid #9a2617;
-                color: #ffffff;
-            }
-            QPushButton#stopBtn:hover {
-                background-color: #be2e13;
-            }
-            QPushButton#stopBtn:pressed {
-                background-color: #7a1d11;
-            }
-            QTextEdit#console {
-                background-color: #181818;
-                border: 1px solid #2d2d2d;
-                border-radius: 6px;
-                padding: 12px;
-                color: #d4d4d4;
-            }
-            QScrollBar:vertical {
-                background: #1e1e1e;
-                width: 10px;
-                margin: 0px;
-            }
-            QScrollBar::handle:vertical {
-                background: #424242;
-                min-height: 20px;
-                border-radius: 5px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #4f4f4f;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-            QStatusBar {
-                background-color: #007acc;
-                color: #ffffff;
-            }
-        """)
+        """Sets main application stylesheets corresponding to theme_is_dark."""
+        if self.theme_is_dark:
+            # Slate Dark Colors Scheme (VS Code Theme Matching)
+            self.setStyleSheet("""
+                QMainWindow { background-color: #1e1e1e; }
+                QWidget { color: #d4d4d4; font-family: 'Segoe UI', sans-serif; font-size: 13px; }
+                QFrame#headerWidget { background-color: #252526; border: 1px solid #2d2d2d; border-radius: 6px; }
+                QFrame#actionsFrame { background-color: #252526; border: 1px solid #2d2d2d; border-radius: 4px; }
+                QFrame#findReplacePanel { background-color: #252526; border: 1px solid #3c3c3c; border-radius: 4px; }
+                QFrame#welcomeWidget { background-color: #1e1e1e; border: 1px solid #2d2d2d; border-radius: 6px; }
+                QLabel#welcomeTitle { color: #ffffff; font-size: 24px; font-weight: bold; }
+                QLabel#welcomeSubtitle { color: #858585; font-size: 12px; }
+                QTabWidget::pane { border: 1px solid #2d2d2d; background-color: #252526; }
+                QTabBar::tab { background-color: #1e1e1e; color: #969696; padding: 6px 14px; border: 1px solid #2d2d2d; border-bottom: none; }
+                QTabBar::tab:selected { background-color: #1e1e1e; color: #ffffff; border-bottom: 2px solid #007acc; font-weight: bold; }
+                QListWidget { background-color: #252526; border: none; padding: 4px; }
+                QListWidget::item { padding: 6px 10px; border-radius: 4px; color: #cccccc; }
+                QListWidget::item:hover { background-color: #2a2d2e; color: #ffffff; }
+                QListWidget::item:selected { background-color: #37373d; color: #4ec9b0; font-weight: bold; }
+                QLineEdit { background-color: #3c3c3c; border: 1px solid #3c3c3c; border-radius: 4px; padding: 6px 10px; color: #ffffff; }
+                QLineEdit:focus { border: 1px solid #007acc; background-color: #2d2d2d; }
+                QPushButton { background-color: #3c3c3c; border: 1px solid #3c3c3c; border-radius: 4px; padding: 5px 12px; font-weight: bold; color: #e1e1e1; }
+                QPushButton:hover { background-color: #4c4c4c; color: #ffffff; }
+                QPushButton#runBtn { background-color: #0e639c; border: 1px solid #0e639c; color: #ffffff; }
+                QPushButton#runBtn:hover { background-color: #1177bb; }
+                QPushButton#stopBtn { background-color: #9a2617; border: 1px solid #9a2617; color: #ffffff; }
+                QPushButton#stopBtn:hover { background-color: #be2e13; }
+                QTextEdit#console { background-color: #181818; border: 1px solid #2d2d2d; border-radius: 6px; padding: 12px; color: #d4d4d4; }
+                QScrollBar:vertical { background: #1e1e1e; width: 10px; }
+                QScrollBar::handle:vertical { background: #424242; min-height: 20px; border-radius: 5px; }
+                QScrollBar::handle:vertical:hover { background: #5f5f5f; }
+                QStatusBar { background-color: #007acc; color: #ffffff; }
+            """)
+        else:
+            # Elegant Light Colors Scheme (VS Code Light+ Matching)
+            self.setStyleSheet("""
+                QMainWindow { background-color: #ffffff; }
+                QWidget { color: #333333; font-family: 'Segoe UI', sans-serif; font-size: 13px; }
+                QFrame#headerWidget { background-color: #f3f3f3; border: 1px solid #e4e4e4; border-radius: 6px; }
+                QFrame#actionsFrame { background-color: #f3f3f3; border: 1px solid #e4e4e4; border-radius: 4px; }
+                QFrame#findReplacePanel { background-color: #f3f3f3; border: 1px solid #cccccc; border-radius: 4px; }
+                QFrame#welcomeWidget { background-color: #ffffff; border: 1px solid #e4e4e4; border-radius: 6px; }
+                QLabel#welcomeTitle { color: #000000; font-size: 24px; font-weight: bold; }
+                QLabel#welcomeSubtitle { color: #6a6a6a; font-size: 12px; }
+                QTabWidget::pane { border: 1px solid #e4e4e4; background-color: #ffffff; }
+                QTabBar::tab { background-color: #f3f3f3; color: #6a6a6a; padding: 6px 14px; border: 1px solid #e4e4e4; border-bottom: none; }
+                QTabBar::tab:selected { background-color: #ffffff; color: #000000; border-bottom: 2px solid #007acc; font-weight: bold; }
+                QListWidget { background-color: #ffffff; border: none; padding: 4px; }
+                QListWidget::item { padding: 6px 10px; border-radius: 4px; color: #333333; }
+                QListWidget::item:hover { background-color: #e4e6f1; color: #000000; }
+                QListWidget::item:selected { background-color: #cfd8dc; color: #037a72; font-weight: bold; }
+                QLineEdit { background-color: #f3f3f3; border: 1px solid #e4e4e4; border-radius: 4px; padding: 6px 10px; color: #000000; }
+                QLineEdit:focus { border: 1px solid #007acc; background-color: #ffffff; }
+                QPushButton { background-color: #e1e1e1; border: 1px solid #cccccc; border-radius: 4px; padding: 5px 12px; font-weight: bold; color: #333333; }
+                QPushButton:hover { background-color: #d1d1d1; color: #000000; }
+                QPushButton#runBtn { background-color: #007acc; border: 1px solid #007acc; color: #ffffff; }
+                QPushButton#runBtn:hover { background-color: #0088dd; }
+                QPushButton#stopBtn { background-color: #be2e13; border: 1px solid #be2e13; color: #ffffff; }
+                QPushButton#stopBtn:hover { background-color: #e53935; }
+                QTextEdit#console { background-color: #f3f3f3; border: 1px solid #e4e4e4; border-radius: 6px; padding: 12px; color: #333333; }
+                QScrollBar:vertical { background: #f3f3f3; width: 10px; }
+                QScrollBar::handle:vertical { background: #cccccc; min-height: 20px; border-radius: 5px; }
+                QScrollBar::handle:vertical:hover { background: #aaaaaa; }
+                QStatusBar { background-color: #007acc; color: #ffffff; }
+            """)
+
+        # Sync active tab style sheet coloring
+        for idx in range(self.editor_tabs.count()):
+            tab = self.editor_tabs.widget(idx)
+            editor = tab.findChild(CodeEditor)
+            minimap = tab.findChild(Minimap)
+            if editor and minimap:
+                if self.theme_is_dark:
+                    editor.setStyleSheet("background-color: #1e1e1e; border: 1px solid #2d2d2d; color: #ffffff;")
+                    editor.line_number_area.setStyleSheet("background-color: #1e1e1e;")
+                    minimap.setStyleSheet("background-color: #1a1a1a; border: none; border-left: 1px solid #2d2d2d;")
+                else:
+                    editor.setStyleSheet("background-color: #ffffff; border: 1px solid #e4e4e4; color: #333333;")
+                    editor.line_number_area.setStyleSheet("background-color: #f3f3f3;")
+                    minimap.setStyleSheet("background-color: #fafafa; border: none; border-left: 1px solid #e4e4e4;")
+                editor.highlighter.update_theme(self.theme_is_dark)
+                minimap.highlighter.update_theme(self.theme_is_dark)
+
+    def toggle_theme(self):
+        self.theme_is_dark = not self.theme_is_dark
+        self.apply_theme()
+        self.write_system_log(f"Switched theme to {'Dark Mode' if self.theme_is_dark else 'Light Mode'}", success=True)
 
     def update_compiler_status(self):
-        """Displays detected compiler versions on status bar."""
         gcc_status = f"GCC: {self.gcc_version.split(') ')[-1] if self.gcc_version else 'Missing'}"
         gpp_status = f"G++: {self.gpp_version.split(') ')[-1] if self.gpp_version else 'Missing'}"
-        
-        status_msg = f"🔍  Compiler Status:  {gcc_status}   |   {gpp_status}"
-        self.status_bar.showMessage(status_msg)
+        self.status_bar.showMessage(f"🔍  Compiler Status:  {gcc_status}   |   {gpp_status}")
 
     def refresh_files(self):
-        """Scans working directory and populates file lists."""
+        """Scans working directory and updates sidebar explorer tabs."""
         self.c_list.clear()
         self.cpp_list.clear()
         
         if not os.path.exists(self.target_dir):
-            self.write_system_log(f"Error: Target directory '{self.target_dir}' does not exist.", error=True)
+            self.write_system_log(f"Error: Directory '{self.target_dir}' does not exist.", error=True)
             return
 
         try:
             files = sorted(os.listdir(self.target_dir))
         except Exception as e:
-            self.write_system_log(f"Error listing files: {str(e)}", error=True)
+            self.write_system_log(f"Error listing folder: {str(e)}", error=True)
             return
 
         c_count = 0
         cpp_count = 0
-
         search_query = self.search_input.text().lower()
 
         for filename in files:
-            # Filter files if there's a search term
             if search_query and search_query not in filename.lower():
                 continue
                 
@@ -460,80 +1548,408 @@ class CoderunApp(QMainWindow):
         self.tab_widget.setTabText(0, f"C Files ({c_count})")
         self.tab_widget.setTabText(1, f"C++ Files ({cpp_count})")
         
-        # Reset selection if old file is no longer in directory
-        if self.selected_file and not os.path.exists(self.selected_file):
-            self.selected_file = None
-            self.active_file_lbl.setText("No File Selected")
-            self.run_btn.setEnabled(False)
+        # Verify active files on disk
+        for idx in reversed(range(self.editor_tabs.count())):
+            tab = self.editor_tabs.widget(idx)
+            editor = tab.findChild(CodeEditor)
+            if editor and not os.path.exists(editor.filepath):
+                self.editor_tabs.removeTab(idx)
+                
+        self.update_editor_ui_state()
 
     def filter_files(self):
-        """Triggered when the search bar value changes."""
         self.refresh_files()
 
-    def select_folder(self):
-        """Allows user to dynamically select another working directory."""
+    def on_sidebar_file_clicked(self, item):
+        filepath = item.data(Qt.ItemDataRole.UserRole)
+        self.open_file_by_path(filepath)
+
+    # ==============================================================================
+    # 9. Document and Multi-Tab Management
+# ==============================================================================
+    def get_active_editor(self):
+        idx = self.editor_tabs.currentIndex()
+        if idx == -1:
+            return None
+        tab_widget = self.editor_tabs.widget(idx)
+        return tab_widget.findChild(CodeEditor)
+
+    def update_editor_ui_state(self):
+        """Displays Welcome screen if all files are closed, else displays editor tab view."""
+        count = self.editor_tabs.count()
+        if count == 0:
+            self.workspace_stack.setCurrentIndex(0)  # Show Welcome screen
+            self.active_file_lbl.setText("No File Open")
+            self.save_btn.setEnabled(False)
+            self.save_as_btn.setEnabled(False)
+            self.run_btn.setEnabled(False)
+            self.stop_btn.setEnabled(False)
+            self.stdin_input.setEnabled(False)
+            self.send_btn.setEnabled(False)
+            self.cursor_info_lbl.setText("")
+        else:
+            self.workspace_stack.setCurrentIndex(1)  # Show Tab view
+            self.save_btn.setEnabled(True)
+            self.save_as_btn.setEnabled(True)
+            
+            editor = self.get_active_editor()
+            if editor:
+                self.active_file_lbl.setText(os.path.basename(editor.filepath))
+                # Compiler toggles
+                ext = os.path.splitext(editor.filepath)[1].lower()
+                has_compiler = False
+                if ext == ".c" and self.gcc_version:
+                    has_compiler = True
+                elif ext in [".cpp", ".cc", ".cxx"] and self.gpp_version:
+                    has_compiler = True
+                self.run_btn.setEnabled(has_compiler and not self.is_compiling and not self.is_running_program)
+                self.update_statusbar_cursor_info()
+
+    def open_file_by_path(self, filepath):
+        """Opens file in a tab, checking if it is already open first."""
+        filepath = os.path.abspath(filepath)
+        
+        # Check if already open
+        for idx in range(self.editor_tabs.count()):
+            tab_widget = self.editor_tabs.widget(idx)
+            editor = tab_widget.findChild(CodeEditor)
+            if editor and editor.filepath == filepath:
+                self.editor_tabs.setCurrentIndex(idx)
+                return
+                
+        # Create container tab widget
+        tab_container = QWidget()
+        tab_layout = QHBoxLayout(tab_container)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+        
+        # Code Editor
+        editor = CodeEditor(self)
+        editor.filepath = filepath
+        editor.is_dirty = False
+        
+        # Minimap
+        minimap = Minimap(editor)
+        
+        # Sync scrolling bidirectionally
+        editor.verticalScrollBar().valueChanged.connect(minimap.verticalScrollBar().setValue)
+        minimap.verticalScrollBar().valueChanged.connect(editor.verticalScrollBar().setValue)
+        
+        # Sync document contents
+        editor.textChanged.connect(lambda e=editor, m=minimap: m.setPlainText(e.toPlainText()))
+        
+        # Bind Syntax highlighter adaptively
+        editor.highlighter = CppSyntaxHighlighter(editor.document(), self.theme_is_dark)
+        minimap.highlighter = CppSyntaxHighlighter(minimap.document(), self.theme_is_dark)
+        
+        # Add Editor and Minimap side-by-side
+        tab_layout.addWidget(editor, stretch=8)
+        tab_layout.addWidget(minimap, stretch=1)
+        
+        # Connect editor triggers
+        editor.textChanged.connect(lambda e=editor: self.on_editor_modified(e))
+        editor.cursorPositionChanged.connect(self.update_statusbar_cursor_info)
+        
+        # Add tab
+        tab_title = os.path.basename(filepath)
+        idx = self.editor_tabs.addTab(tab_container, tab_title)
+        
+        # Load contents
+        try:
+            with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            editor.blockSignals(True)
+            editor.setPlainText(content)
+            minimap.setPlainText(content)
+            editor.blockSignals(False)
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Could not open file: {str(e)}")
+            self.editor_tabs.removeTab(idx)
+            return
+            
+        self.editor_tabs.setCurrentIndex(idx)
+        self.update_editor_ui_state()
+        self.apply_theme() # Repaint styles
+
+    def on_editor_modified(self, editor):
+        if not editor.is_dirty:
+            editor.is_dirty = True
+            filename = os.path.basename(editor.filepath)
+            # Find active tab index and prepend bullet dot
+            for idx in range(self.editor_tabs.count()):
+                tab = self.editor_tabs.widget(idx)
+                if tab.findChild(CodeEditor) == editor:
+                    self.editor_tabs.setTabText(idx, f"• {filename}")
+                    break
+            self.active_file_lbl.setText(f"• {filename}")
+
+    def save_active_file(self):
+        editor = self.get_active_editor()
+        if not editor:
+            return
+            
+        try:
+            content = editor.toPlainText()
+            with open(editor.filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+                
+            editor.is_dirty = False
+            filename = os.path.basename(editor.filepath)
+            
+            # Find active tab index and clear dot bullet
+            for idx in range(self.editor_tabs.count()):
+                tab = self.editor_tabs.widget(idx)
+                if tab.findChild(CodeEditor) == editor:
+                    self.editor_tabs.setTabText(idx, filename)
+                    break
+                    
+            self.active_file_lbl.setText(filename)
+            self.write_system_log(f"Saved file: {filename}", success=True)
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save current document: {str(e)}")
+
+    def save_as_file(self):
+        editor = self.get_active_editor()
+        if not editor:
+            return
+            
+        filepath, _ = QFileDialog.getSaveFileName(self, "Save File As", self.target_dir, "C/C++ Files (*.c *.cpp *.cc *.cxx *.h *.hpp);;All Files (*.*)")
+        if filepath:
+            filepath = os.path.abspath(filepath)
+            try:
+                content = editor.toPlainText()
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    
+                editor.filepath = filepath
+                editor.is_dirty = False
+                
+                # Update tab details
+                idx = self.editor_tabs.currentIndex()
+                self.editor_tabs.setTabText(idx, os.path.basename(filepath))
+                self.active_file_lbl.setText(os.path.basename(filepath))
+                
+                self.refresh_files()
+                self.write_system_log(f"Saved file as: {os.path.basename(filepath)}", success=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Save As Error", f"Could not save file: {str(e)}")
+
+    def close_tab(self, idx):
+        tab_widget = self.editor_tabs.widget(idx)
+        editor = tab_widget.findChild(CodeEditor)
+        
+        if editor and editor.is_dirty:
+            confirm = QMessageBox.question(
+                self, "Unsaved Changes",
+                f"Do you want to save changes to '{os.path.basename(editor.filepath)}' before closing?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+            )
+            if confirm == QMessageBox.StandardButton.Yes:
+                # Set active tab temporarily to execute save
+                self.editor_tabs.setCurrentIndex(idx)
+                self.save_active_file()
+            elif confirm == QMessageBox.StandardButton.Cancel:
+                return
+                
+        self.editor_tabs.removeTab(idx)
+        self.update_editor_ui_state()
+
+    def on_active_tab_changed(self, idx):
+        self.update_editor_ui_state()
+
+    # ==============================================================================
+    # 10. File System Explorer Panel Controls
+# ==============================================================================
+    def new_file(self):
+        filename, ok = QInputDialog.getText(self, "New C/C++ File", "Enter file name (e.g., main.cpp):")
+        if ok and filename.strip():
+            filename = filename.strip()
+            filename_lower = filename.lower()
+            if not (filename_lower.endswith(".c") or filename_lower.endswith(".cpp") or 
+                    filename_lower.endswith(".cc") or filename_lower.endswith(".cxx") or 
+                    filename_lower.endswith(".h") or filename_lower.endswith(".hpp")):
+                # Check active sidebar tab (0 = C, 1 = C++)
+                ext = ".c" if self.tab_widget.currentIndex() == 0 else ".cpp"
+                filename += ext
+                
+            filepath = os.path.join(self.target_dir, filename)
+            if os.path.exists(filepath):
+                QMessageBox.warning(self, "Warning", "A file with that name already exists!")
+                return
+                
+            try:
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write("")
+                self.refresh_files()
+                self.open_file_by_path(filepath)
+                self.write_system_log(f"Created file: {filename}", success=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to create file: {str(e)}")
+
+    def rename_file(self):
+        editor = self.get_active_editor()
+        if not editor:
+            QMessageBox.information(self, "Rename File", "Please select an active file tab to rename.")
+            return
+            
+        old_path = editor.filepath
+        old_name = os.path.basename(old_path)
+        
+        new_name, ok = QInputDialog.getText(self, "Rename File", "Enter new name:", text=old_name)
+        if ok and new_name.strip() and new_name.strip() != old_name:
+            new_name = new_name.strip()
+            new_path = os.path.join(self.target_dir, new_name)
+            if os.path.exists(new_path):
+                QMessageBox.warning(self, "Warning", "A file with that name already exists!")
+                return
+                
+            try:
+                # Save changes
+                if editor.is_dirty:
+                    self.save_active_file()
+                    
+                # Close watcher temporarily
+                if hasattr(self, 'watcher') and old_path in self.watcher.files():
+                    self.watcher.removePath(old_path)
+                    
+                os.rename(old_path, new_path)
+                
+                # Update editor filepath properties
+                editor.filepath = new_path
+                idx = self.editor_tabs.currentIndex()
+                self.editor_tabs.setTabText(idx, new_name)
+                self.active_file_lbl.setText(new_name)
+                
+                self.refresh_files()
+                self.write_system_log(f"Renamed file '{old_name}' to '{new_name}'", success=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to rename file: {str(e)}")
+
+    def delete_file(self):
+        editor = self.get_active_editor()
+        if not editor:
+            QMessageBox.information(self, "Delete File", "Please select an active file tab to delete.")
+            return
+            
+        filepath = editor.filepath
+        filename = os.path.basename(filepath)
+        
+        confirm = QMessageBox.question(
+            self, "Confirm Delete",
+            f"Are you sure you want to permanently delete '{filename}'?\nThis action cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            try:
+                # Close active tab
+                idx = self.editor_tabs.currentIndex()
+                editor.is_dirty = False # avoid close confirm
+                self.editor_tabs.removeTab(idx)
+                
+                os.remove(filepath)
+                self.refresh_files()
+                self.update_editor_ui_state()
+                self.write_system_log(f"Deleted file permanently: {filename}", error=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not delete file: {str(e)}")
+
+    def open_file_dialog(self):
         from PySide6.QtWidgets import QFileDialog
-        selected = QFileDialog.getExistingDirectory(self, "Select Working Directory", self.target_dir)
+        filepath, _ = QFileDialog.getOpenFileName(self, "Open C/C++ File", self.target_dir, "C/C++ Files (*.c *.cpp *.cc *.cxx *.h *.hpp);;All Files (*.*)")
+        if filepath:
+            self.open_file_by_path(filepath)
+
+    def select_folder(self):
+        from PySide6.QtWidgets import QFileDialog
+        selected = QFileDialog.getExistingDirectory(self, "Select Workspace Folder", self.target_dir)
         if selected:
-            # Update directory
             self.target_dir = os.path.abspath(selected)
             self.dir_path_lbl.setText(self.target_dir)
             
-            # Update file system watcher
+            # Close all active editor tabs
+            for _ in range(self.editor_tabs.count()):
+                self.editor_tabs.removeTab(0)
+                
+            self.update_editor_ui_state()
+            
+            # Reset watcher paths
             if hasattr(self, 'watcher'):
-                # Remove old paths
-                watched = self.watcher.directories()
-                if watched:
-                    self.watcher.removePaths(watched)
-                # Add new path
+                dirs = self.watcher.directories()
+                if dirs:
+                    self.watcher.removePaths(dirs)
                 self.watcher.addPath(self.target_dir)
                 
             self.refresh_files()
-            self.write_system_log(f"Switched workspace directory to: {self.target_dir}", success=True)
-            self.update_status("Ready")
+            self.write_system_log(f"Loaded workspace folder: {self.target_dir}", success=True)
 
-    def on_file_selected(self, item):
-        """Fires when a user single-clicks a file."""
-        self.selected_file = item.data(Qt.ItemDataRole.UserRole)
-        filename = os.path.basename(self.selected_file)
-        self.active_file_lbl.setText(f"Selected: {filename}")
-        
-        # Check compiler availability for selected file
-        has_compiler = False
-        filename_lower = filename.lower()
-        if filename_lower.endswith(".c") and self.gcc_version:
-            has_compiler = True
-        elif (filename_lower.endswith(".cpp") or filename_lower.endswith(".cc") or filename_lower.endswith(".cxx")) and self.gpp_version:
-            has_compiler = True
+    def show_find_panel(self):
+        self.find_replace_panel.show()
+        self.find_replace_panel.find_input.setFocus()
+        self.find_replace_panel.find_input.selectAll()
+
+    def show_replace_panel(self):
+        self.find_replace_panel.show()
+        self.find_replace_panel.find_input.setFocus()
+        self.find_replace_panel.find_input.selectAll()
+
+    def toggle_editor_comment(self):
+        editor = self.get_active_editor()
+        if editor:
+            editor.toggle_comment()
+
+    def toggle_editor_block_comment(self):
+        editor = self.get_active_editor()
+        if editor:
+            editor.toggle_block_comment()
+
+    def update_statusbar_cursor_info(self):
+        editor = self.get_active_editor()
+        if not editor:
+            self.cursor_info_lbl.setText("")
+            return
             
-        if has_compiler and not self.is_compiling and not self.is_running_program:
-            self.run_btn.setEnabled(True)
-        else:
-            self.run_btn.setEnabled(False)
+        cursor = editor.textCursor()
+        line = cursor.blockNumber() + 1
+        col = cursor.columnNumber() + 1
+        
+        ext = os.path.splitext(editor.filepath)[1].lower() if editor.filepath else ""
+        lang = "C" if ext == ".c" else ("C++" if ext in [".cpp", ".cc", ".cxx"] else "Plain Text")
+        
+        self.cursor_info_lbl.setText(f"Ln {line}, Col {col}  |  Spaces: 4  |  UTF-8  |  {lang}")
 
+    # ==============================================================================
+    # 11. Compiler and Execution Engines
+# ==============================================================================
     def write_system_log(self, text, error=False, success=False):
-        """Writes stylized system messages directly to output console."""
         self.console.moveCursor(QTextCursor.MoveOperation.End)
-        color_hex = "#a1260d" if error else ("#33a06f" if success else "#007acc")
-        self.console.insertHtml(f"<div style='color: {color_hex}; font-family: Consolas; font-weight: bold;'>[System] {text}</div><br>")
+        color = "#a1260d" if error else ("#33a06f" if success else ("#569cd6" if self.theme_is_dark else "#0e639c"))
+        self.console.insertHtml(f"<div style='color: {color}; font-family: Consolas; font-weight: bold;'>[System] {text}</div><br>")
         self.console.ensureCursorVisible()
 
     def clear_console(self):
-        """Clears console screen."""
         self.console.clear()
 
     def update_status(self, status, message=None):
-        """Updates internal state visual indicators, active buttons, and bottom state bar."""
+        """Standard status machine managing active panel highlights and lock gates."""
         if status == "Ready":
             self.status_bar.setStyleSheet("background-color: #007acc; color: #ffffff;")
-            self.status_bar.showMessage(f"Ready  |  Connected to: {self.target_dir}")
-            self.run_btn.setEnabled(self.selected_file is not None)
+            self.status_bar.showMessage(f"Ready  |  Workspace: {self.target_dir}")
+            self.run_btn.setEnabled(self.get_active_editor() is not None)
             self.stop_btn.setEnabled(False)
             self.stdin_input.setEnabled(False)
             self.send_btn.setEnabled(False)
             self.refresh_btn.setEnabled(True)
             self.search_input.setEnabled(True)
             self.tab_widget.setEnabled(True)
+            self.new_file_btn.setEnabled(True)
+            self.rename_file_btn.setEnabled(True)
+            self.delete_file_btn.setEnabled(True)
+            self.open_folder_btn.setEnabled(True)
+            self.editor_tabs.setEnabled(True)
+            editor = self.get_active_editor()
+            if editor:
+                editor.setEnabled(True)
         elif status == "Compiling":
             self.status_bar.setStyleSheet("background-color: #2b5b84; color: #ffffff;")
             self.status_bar.showMessage(f"🔨 Compiling C/C++ source code...")
@@ -544,6 +1960,14 @@ class CoderunApp(QMainWindow):
             self.refresh_btn.setEnabled(False)
             self.search_input.setEnabled(False)
             self.tab_widget.setEnabled(False)
+            self.new_file_btn.setEnabled(False)
+            self.rename_file_btn.setEnabled(False)
+            self.delete_file_btn.setEnabled(False)
+            self.open_folder_btn.setEnabled(False)
+            self.editor_tabs.setEnabled(False)
+            editor = self.get_active_editor()
+            if editor:
+                editor.setEnabled(False)
         elif status == "Running":
             self.status_bar.setStyleSheet("background-color: #d18d00; color: #000000; font-weight: bold;")
             self.status_bar.showMessage(f"🚀 Executing binary in background...")
@@ -555,88 +1979,107 @@ class CoderunApp(QMainWindow):
             self.refresh_btn.setEnabled(False)
             self.search_input.setEnabled(False)
             self.tab_widget.setEnabled(False)
+            self.new_file_btn.setEnabled(False)
+            self.rename_file_btn.setEnabled(False)
+            self.delete_file_btn.setEnabled(False)
+            self.open_folder_btn.setEnabled(False)
+            self.editor_tabs.setEnabled(False)
+            editor = self.get_active_editor()
+            if editor:
+                editor.setEnabled(False)
         elif status == "Success":
             self.status_bar.setStyleSheet("background-color: #33a06f; color: #ffffff;")
             self.status_bar.showMessage(f"✅ Finished Successfully! " + (message if message else ""))
-            self.run_btn.setEnabled(self.selected_file is not None)
+            self.run_btn.setEnabled(self.get_active_editor() is not None)
             self.stop_btn.setEnabled(False)
             self.stdin_input.setEnabled(False)
             self.send_btn.setEnabled(False)
             self.refresh_btn.setEnabled(True)
             self.search_input.setEnabled(True)
             self.tab_widget.setEnabled(True)
+            self.new_file_btn.setEnabled(True)
+            self.rename_file_btn.setEnabled(True)
+            self.delete_file_btn.setEnabled(True)
+            self.open_folder_btn.setEnabled(True)
+            self.editor_tabs.setEnabled(True)
+            editor = self.get_active_editor()
+            if editor:
+                editor.setEnabled(True)
         elif status == "Error":
             self.status_bar.setStyleSheet("background-color: #a1260d; color: #ffffff;")
             self.status_bar.showMessage(f"❌ Failed! " + (message if message else ""))
-            self.run_btn.setEnabled(self.selected_file is not None)
+            self.run_btn.setEnabled(self.get_active_editor() is not None)
             self.stop_btn.setEnabled(False)
             self.stdin_input.setEnabled(False)
             self.send_btn.setEnabled(False)
             self.refresh_btn.setEnabled(True)
             self.search_input.setEnabled(True)
             self.tab_widget.setEnabled(True)
+            self.new_file_btn.setEnabled(True)
+            self.rename_file_btn.setEnabled(True)
+            self.delete_file_btn.setEnabled(True)
+            self.open_folder_btn.setEnabled(True)
+            self.editor_tabs.setEnabled(True)
+            editor = self.get_active_editor()
+            if editor:
+                editor.setEnabled(True)
 
     def update_time_display(self):
-        """Render updated compilation & execution performance metrics."""
         comp_str = f"Compile: {self.compile_time:.3f}s" if self.compile_time > 0 else "Compile: --s"
         run_str = f"Run: {self.run_time:.3f}s" if self.run_time > 0 else "Run: --s"
         self.time_lbl.setText(f"{comp_str}  |  {run_str}")
 
     def run_selected_file(self):
-        """Triggers full compilation & execution state machine flow."""
-        if not self.selected_file or self.is_compiling or self.is_running_program:
+        editor = self.get_active_editor()
+        if not editor or self.is_compiling or self.is_running_program:
             return
+
+        # Auto-save changes before compile (VS Code Style)
+        if editor.is_dirty:
+            self.save_active_file()
 
         self.clear_console()
         self.compile_time = 0
         self.run_time = 0
         self.update_time_display()
         
-        filename = os.path.basename(self.selected_file)
-        
-        # Set up state
+        filename = os.path.basename(editor.filepath)
         self.is_compiling = True
         self.update_status("Compiling")
         
-        # Build compile arguments
         output_binary = os.path.join(self.target_dir, "output.exe")
-        
-        # Check if existing output.exe is locked/running and try to delete it
         if os.path.exists(output_binary):
             try:
                 os.remove(output_binary)
             except Exception:
-                self.write_system_log("Warning: 'output.exe' is currently locked. Trying to kill running instances...", error=True)
-                # Terminate any orphaned output.exe using taskkill
+                self.write_system_log("Warning: Binary 'output.exe' is locked. Force killing running instances...", error=True)
                 subprocess.run(["taskkill", "/f", "/im", "output.exe"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
                 time.sleep(0.2)
                 try:
                     os.remove(output_binary)
                 except Exception as e:
-                    self.write_system_log(f"Error: Cannot overwrite target 'output.exe' output file. Is it locked elsewhere? Details: {str(e)}", error=True)
+                    self.write_system_log(f"Error: Overwriting target 'output.exe' failed. Details: {str(e)}", error=True)
                     self.is_compiling = False
                     self.update_status("Error", "Output binary locked")
                     return
 
-        filename_lower = filename.lower()
-        if filename_lower.endswith(".c"):
+        ext = os.path.splitext(editor.filepath)[1].lower()
+        if ext == ".c":
             compiler = "gcc"
         else:
             compiler = "g++"
             
         compile_cmd = [compiler, filename, "-o", "output.exe"]
-        
         self.write_system_log(f"Compiling: {' '.join(compile_cmd)}")
         self.compile_start_time = time.perf_counter()
         
-        # Start compiler QProcess
+        # Start QProcess Compiler
         self.process = QProcess(self)
         self.process.setWorkingDirectory(self.target_dir)
         self.process.readyReadStandardOutput.connect(self.read_compiler_stdout)
         self.process.readyReadStandardError.connect(self.read_compiler_stderr)
         self.process.finished.connect(self.compile_finished)
         
-        # Start compile process
         self.process.start(compiler, compile_cmd[1:])
 
     def read_compiler_stdout(self):
@@ -648,7 +2091,6 @@ class CoderunApp(QMainWindow):
     def read_compiler_stderr(self):
         data = self.process.readAllStandardError().data().decode('utf-8', errors='replace')
         self.console.moveCursor(QTextCursor.MoveOperation.End)
-        # Wrap compiler warning/error messages in slightly light red colors
         self.console.insertHtml(f"<span style='color: #f48771; font-family: Consolas;'>{data.replace('\n', '<br>')}</span>")
         self.console.ensureCursorVisible()
 
@@ -666,27 +2108,24 @@ class CoderunApp(QMainWindow):
             self.process = None
 
     def run_compiled_binary(self):
-        """Starts executing the successfully compiled output binary."""
         self.is_running_program = True
         self.update_status("Running")
         
         output_binary = os.path.join(self.target_dir, "output.exe")
         if not os.path.exists(output_binary):
-            self.write_system_log("Error: Compiled output binary could not be found.", error=True)
+            self.write_system_log("Error: Compiled binary was not found.", error=True)
             self.update_status("Error", "Binary missing")
             return
             
         self.write_system_log("Executing: output.exe")
         self.run_start_time = time.perf_counter()
         
-        # Configure process execution
         self.process = QProcess(self)
         self.process.setWorkingDirectory(self.target_dir)
         self.process.readyReadStandardOutput.connect(self.read_program_stdout)
         self.process.readyReadStandardError.connect(self.read_program_stderr)
         self.process.finished.connect(self.program_finished)
         
-        # Launch binary
         self.process.start(output_binary, [])
 
     def read_program_stdout(self):
@@ -698,24 +2137,19 @@ class CoderunApp(QMainWindow):
     def read_program_stderr(self):
         data = self.process.readAllStandardError().data().decode('utf-8', errors='replace')
         self.console.moveCursor(QTextCursor.MoveOperation.End)
-        # Highlight running program errors in red
         self.console.insertHtml(f"<span style='color: #e57373; font-family: Consolas;'>{data.replace('\n', '<br>')}</span>")
         self.console.ensureCursorVisible()
 
     def send_stdin(self):
-        """Sends user keyboard inputs typed in the input line directly into the process's standard input stream."""
         if not self.process or not self.is_running_program:
             return
             
         input_text = self.stdin_input.text()
-        # Stream standard input text to running binary process
         self.process.write(input_text.encode('utf-8') + b'\n')
         
-        # Display typed text on console so the user sees interactive terminal flow
         self.console.moveCursor(QTextCursor.MoveOperation.End)
         self.console.insertHtml(f"<span style='color: #4ec9b0; font-family: Consolas; font-weight: bold;'>{input_text}</span><br>")
         self.console.ensureCursorVisible()
-        
         self.stdin_input.clear()
 
     def program_finished(self, exit_code, exit_status):
@@ -724,7 +2158,7 @@ class CoderunApp(QMainWindow):
         self.is_running_program = False
         
         if exit_code == 0:
-            self.write_system_log(f"Program executed successfully in {self.run_time:.3f} seconds with exit code {exit_code}.", success=True)
+            self.write_system_log(f"Program executed successfully in {self.run_time:.3f} seconds.", success=True)
             self.update_status("Success", f"Exit code {exit_code}")
         else:
             self.write_system_log(f"Program terminated with exit code {exit_code}.", error=True)
@@ -733,7 +2167,6 @@ class CoderunApp(QMainWindow):
         self.process = None
 
     def terminate_process(self):
-        """Forcibly interrupts compiles or active run processes (critical for infinite loops)."""
         if not self.process:
             return
             
@@ -753,15 +2186,46 @@ class CoderunApp(QMainWindow):
         self.process = None
 
     def closeEvent(self, event):
-        """Cleanup running processes upon closing GUI."""
+        """Triggers check for unsaved edits on closing application."""
+        unsaved = []
+        for idx in range(self.editor_tabs.count()):
+            tab = self.editor_tabs.widget(idx)
+            editor = tab.findChild(CodeEditor)
+            if editor and editor.is_dirty:
+                unsaved.append(editor)
+                
+        if unsaved:
+            confirm = QMessageBox.question(
+                self, "Unsaved Changes",
+                f"You have unsaved changes in {len(unsaved)} file(s). Do you want to save them before exiting?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
+            )
+            if confirm == QMessageBox.StandardButton.Yes:
+                # Save all
+                for editor in unsaved:
+                    try:
+                        content = editor.toPlainText()
+                        with open(editor.filepath, "w", encoding="utf-8") as f:
+                            f.write(content)
+                    except Exception:
+                        pass
+                event.accept()
+            elif confirm == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+                
         if self.process:
             self.process.kill()
         event.accept()
 
+
+# ==============================================================================
+# 12. Main Execution Hook
+# ==============================================================================
 def main():
     app = QApplication(sys.argv)
     
-    # Check if target directory is passed via terminal argument (jupyter style launcher)
+    # Check if target directory is passed via terminal argument
     target_dir = None
     if len(sys.argv) > 1:
         potential_dir = sys.argv[1]
